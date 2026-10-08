@@ -162,6 +162,7 @@ Precedence (narrowest wins), matching Postman docs: **local > data > environment
 | Profile, account deletion | 1 | implemented | Owner must transfer/delete orgs |
 | Rate-limited auth | 1 | implemented | Edge + local backoff |
 | Orgs, invites (expiring/revocable) | 2 | implemented | |
+| Share collection/folder/request by email | 2 | implemented | Viewer/Editor; direct grant + Resend invite; RLS |
 | Roles owner/admin/editor/viewer + RLS | 2 | implemented | Enforced in DB, not only UI |
 | Presence, comments, mentions | 4 | implemented | In-app mentions only |
 | Activity, revisions, restore | 4 | implemented | |

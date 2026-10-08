@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "../lib/ipc";
 import type { SessionInfo } from "../App";
+import { BrandMark } from "../components/BrandMark";
 
 type Mode = "signin" | "signup" | "reset";
 
@@ -10,8 +11,9 @@ export function AuthScreen(props: {
   onContinueLocal: () => void;
   theme: "light" | "dark";
   onTheme: (t: "light" | "dark") => void;
+  initialMode?: Mode;
 }) {
-  const [mode, setMode] = useState<Mode>("signin");
+  const [mode, setMode] = useState<Mode>(props.initialMode ?? "signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -55,6 +57,7 @@ export function AuthScreen(props: {
       <div className="titlebar-drag h-12" />
       <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-6 pb-16">
         <div className="mb-8">
+          <BrandMark size={48} className="mb-4" />
           <div className="text-xs uppercase tracking-[0.18em] text-[#667085]">API Studio</div>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[#12151a] dark:text-[#eef0f4]">PostConet</h1>
           <p className="mt-2 text-sm text-[#667085]">Sign in with email. Project configuration is part of this build, not the login form.</p>

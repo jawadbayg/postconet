@@ -12,11 +12,29 @@ enabled = true
 port = 54324
 [auth]
 enabled = true
-site_url = "postconet://auth/callback"
-additional_redirect_urls = ["http://127.0.0.1", "postconet://oauth/callback"]
+site_url = "https://wiytwgewlatdhpfthjsc.supabase.co"
+additional_redirect_urls = [
+  "postconet://auth/callback",
+  "postconet://invite",
+  "postconet://oauth/callback",
+  "https://wiytwgewlatdhpfthjsc.supabase.co/functions/v1/share-landing",
+  "http://127.0.0.1"
+]
 enable_signup = true
 [auth.email]
 enable_signup = true
 enable_confirmations = true
 [realtime]
 enabled = true
+
+[functions.share-landing]
+verify_jwt = false
+
+[functions.share-invite]
+verify_jwt = true
+
+[functions.share-accept]
+verify_jwt = true
+
+[functions.share-manage]
+verify_jwt = true

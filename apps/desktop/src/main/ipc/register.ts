@@ -18,7 +18,18 @@ import {
   mcpStartStdio
 } from "@postconet/core";
 import { runtime } from "../services/state.js";
-import { mustRepo, tree, createCollection, createFolder, createRequest, createEnvironment } from "../services/studio.js";
+import {
+  mustRepo,
+  tree,
+  createCollection,
+  createFolder,
+  createRequest,
+  createEnvironment,
+  renameEntity,
+  deleteEntity,
+  moveFolder,
+  moveRequest
+} from "../services/studio.js";
 import {
   signIn,
   signUp,
@@ -28,8 +39,12 @@ import {
   publicUser,
   statusPayload,
   pushQueue,
-  hydrateFromCloud
+  hydrateFromCloud,
+  acceptPendingInvites,
+  listNotifications,
+  markNotificationRead
 } from "../services/cloud.js";
+import { inviteShare, listShares, manageShare } from "../services/share.js";
 import { isCloudConfigured } from "../config.js";
 import { closeConnection, openConnection, sendConnection } from "../services/connections.js";
 import { authorizeInSystemBrowser } from "../services/oauth-loopback.js";
@@ -54,7 +69,7 @@ export function registerIpc() {
   ipcMain.handle("app.brand", () => handle(async () => (await import("@postconet/core")).brand));
   ipcMain.handle("app.cloudConfigured", () => ok(isCloudConfigured()));
 
-  ipcMain.handle("auth.session", () => ok({ user: publicUser(), ...statusPayload() }));
+  ipcMain.handle("auth.session", () => ok(statusPayload()));
   ipcMain.handle("auth.signUp", (_e, raw) =>
     handle(async () => {
       const input = signUpSchema.parse(raw);
@@ -125,24 +140,104 @@ export function registerIpc() {
   );
   ipcMain.handle("workspace.saveEnvironment", (_e, raw) =>
     handle(() => {
-      mustRepo().upsertEnvironment(raw);
-      return raw;
+      const env = raw as { version?: number; updatedAt?: string };
+      env.updatedAt = nowIso();
+      env.version = (env.version ?? 0) + 1;
+      mustRepo().upsertEnvironment(env as never);
+      return env;
     })
   );
   ipcMain.handle("workspace.rename", (_e, raw) =>
     handle(() => {
       const p = z.object({ type: z.enum(["collection", "folder", "request", "environment"]), id: z.string(), name: z.string() }).parse(raw);
-      const repo = mustRepo();
-      if (p.type === "request") {
-        const req = repo.getRequest(p.id);
-        if (!req) throw new Error("Not found");
-        req.name = p.name;
-        req.updatedAt = nowIso();
-        req.version += 1;
-        repo.upsertRequest(req);
-        return req;
-      }
-      return { ok: true };
+      return renameEntity(p.type, p.id, p.name);
+    })
+  );
+  ipcMain.handle("workspace.delete", (_e, raw) =>
+    handle(() => {
+      const p = z.object({ type: z.enum(["collection", "folder", "request", "environment"]), id: z.string() }).parse(raw);
+      return deleteEntity(p.type, p.id);
+    })
+  );
+  ipcMain.handle("workspace.moveFolder", (_e, raw) =>
+    handle(() => {
+      const p = z.object({ folderId: z.string(), collectionId: z.string(), parentId: z.string().nullable() }).parse(raw);
+      return moveFolder(p.folderId, p.collectionId, p.parentId);
+    })
+  );
+  ipcMain.handle("workspace.moveRequest", (_e, raw) =>
+    handle(() => {
+      const p = z.object({ requestId: z.string(), collectionId: z.string(), folderId: z.string().nullable() }).parse(raw);
+      return moveRequest(p.requestId, p.collectionId, p.folderId);
+    })
+  );
+
+  ipcMain.handle("share.invite", (_e, raw) =>
+    handle(() =>
+      inviteShare(
+        z
+          .object({
+            workspaceId: z.string(),
+            resourceKind: z.enum(["collection", "folder", "request"]),
+            resourceId: z.string(),
+            email: z.string().email(),
+            role: z.enum(["viewer", "editor"])
+          })
+          .parse(raw)
+      )
+    )
+  );
+  ipcMain.handle("share.list", (_e, raw) =>
+    handle(() =>
+      listShares(
+        z
+          .object({
+            workspaceId: z.string(),
+            resourceKind: z.enum(["collection", "folder", "request"]),
+            resourceId: z.string()
+          })
+          .parse(raw)
+      )
+    )
+  );
+  ipcMain.handle("share.manage", (_e, raw) => handle(() => manageShare(z.record(z.unknown()).parse(raw))));
+  ipcMain.handle("share.acceptPending", (_e, raw) =>
+    handle(() => acceptPendingInvites(z.object({ token: z.string().optional() }).parse(raw ?? {}).token))
+  );
+  ipcMain.handle("notifications.list", () => handle(() => listNotifications()));
+  ipcMain.handle("notifications.read", (_e, raw) =>
+    handle(async () => {
+      const { id } = z.object({ id: z.string() }).parse(raw);
+      await markNotificationRead(id);
+      return true;
+    })
+  );
+
+  ipcMain.handle("settings.get", () =>
+    handle(() => {
+      const raw = mustRepo().getMeta("ui_settings");
+      return { ...defaultSettings(), ...(raw ? JSON.parse(raw) : {}) };
+    })
+  );
+  ipcMain.handle("settings.set", (_e, raw) =>
+    handle(() => {
+      const prev = mustRepo().getMeta("ui_settings");
+      const next = { ...defaultSettings(), ...(prev ? JSON.parse(prev) : {}), ...(raw as object) };
+      mustRepo().setMeta("ui_settings", JSON.stringify(next));
+      return next;
+    })
+  );
+  ipcMain.handle("history.clear", (_e, raw) =>
+    handle(() => {
+      const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
+      mustRepo().clearHistory(workspaceId);
+      return true;
+    })
+  );
+  ipcMain.handle("sync.conflicts", (_e, raw) =>
+    handle(() => {
+      const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
+      return mustRepo().listConflicts(workspaceId);
     })
   );
 
@@ -180,13 +275,17 @@ export function registerIpc() {
         const next = await storeSetCookies(jar, result.url, result.cookies.map((c) => c.value));
         repo.setCookieJar(p.workspaceId, next);
       }
-      repo.addHistory(p.workspaceId, p.requestId, {
+      const ui = JSON.parse(repo.getMeta("ui_settings") || "{}") as { historyEnabled?: boolean };
+      if (ui.historyEnabled !== false) repo.addHistory(p.workspaceId, p.requestId, {
         status: result.status,
         url: result.url,
         method: p.document.method,
         elapsedMs: result.elapsedMs,
         truncated: result.truncated,
-        bodyPreview: result.bodyText.slice(0, 2000)
+        bodyPreview: result.bodyText.slice(0, 2000),
+        document: p.document,
+        name: p.requestId ? repo.getRequest(p.requestId)?.name : undefined,
+        requestId: p.requestId
       });
       return {
         ...result,
@@ -333,6 +432,16 @@ export function registerIpc() {
       return true;
     })
   );
+}
+
+function defaultSettings() {
+  return {
+    timeoutMs: 30_000,
+    followRedirects: true,
+    tlsVerify: true,
+    historyEnabled: true,
+    theme: "light" as "light" | "dark"
+  };
 }
 
 function interpolatePreview(url: string, vars: Array<{ key: string; value: string; enabled: boolean }>) {

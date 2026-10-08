@@ -413,7 +413,7 @@ export interface SyncOp {
   createdAt: string;
   attempts: number;
   lastError: string | null;
-  status: "pending" | "sending" | "acked" | "rejected" | "conflict";
+  status: "pending" | "sending" | "acked" | "rejected" | "conflict" | "failed";
 }
 
 export interface ChangeLogRow {

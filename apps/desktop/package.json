@@ -6,7 +6,7 @@
   "main": "out/main/index.js",
   "productName": "PostConet API Studio",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/apply-dev-icon.mjs && electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
@@ -17,7 +17,7 @@
   "dependencies": {
     "@postconet/core": "workspace:*",
     "@postconet/persistence": "workspace:*",
-    "@supabase/supabase-js": "2.47.10",
+    "@supabase/supabase-js": "2.117.3",
     "electron-updater": "6.3.9",
     "undici": "7.3.0",
     "zod": "3.24.2"

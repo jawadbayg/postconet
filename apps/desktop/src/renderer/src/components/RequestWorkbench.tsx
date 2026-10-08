@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Plus } from "lucide-react";
 import { CodeEditor } from "./CodeEditor";
 import { languageForBodyMode, languageForText } from "../lib/editorLanguage";
 import { invoke } from "../lib/ipc";
@@ -25,6 +26,7 @@ export function RequestWorkbench(props: {
   environments: Array<{ id: string; name: string }>;
   onEnvironment: (id: string | null) => void;
   authChain: Array<{ type: string; params: Record<string, string> }>;
+  onAddRequest: () => void;
 }) {
   const tab = props.tabs.find((t) => t.id === props.activeId);
   const [section, setSection] = useState<"params" | "auth" | "headers" | "body" | "scripts" | "settings">("params");
@@ -101,17 +103,48 @@ export function RequestWorkbench(props: {
     }
   }
 
+  const tabBar = (
+    <div className="flex items-center gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--panel)] px-1">
+      {props.tabs.map((t) => (
+        <button
+          key={t.id}
+          onClick={() => props.onSelect(t.id)}
+          className={`group flex items-center gap-2 border-r border-[var(--border)] px-3 py-2 text-xs ${t.id === props.activeId ? "bg-[var(--canvas)]" : ""}`}
+        >
+          {t.pinned ? "• " : ""}
+          {t.dirty ? "● " : ""}
+          {t.request.name}
+          <span className="hidden text-[var(--muted)] group-hover:inline" onClick={(e) => (e.stopPropagation(), props.onClose(t.id))}>
+            ×
+          </span>
+        </button>
+      ))}
+      <button
+        type="button"
+        title="New request in this folder"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-[var(--muted)] hover:bg-[var(--canvas)] hover:text-[var(--fg)]"
+        onClick={props.onAddRequest}
+      >
+        <Plus size={14} />
+      </button>
+    </div>
+  );
+
   if (!tab) {
     return (
-      <div className="flex h-full min-h-[320px] items-center justify-center bg-[#f4f5f7] text-sm text-[#667085]">
-        Open or create a request from the sidebar.
+      <div className="flex h-full flex-col bg-[var(--canvas)]">
+        {tabBar}
+        <div className="flex min-h-[320px] flex-1 items-center justify-center text-sm text-[#667085]">
+          Open or create a request from the sidebar.
+        </div>
       </div>
     );
   }
 
-  const protocol = tab.request.protocol;
+  const current = tab;
+  const protocol = current.request.protocol;
   const streaming = protocol === "websocket" || protocol === "sse" || protocol === "mqtt" || protocol === "socketio";
-  const doc = tab.request.document as {
+  const doc = current.request.document as {
     method: string;
     url: string;
     query: Kv[];
@@ -124,7 +157,7 @@ export function RequestWorkbench(props: {
   };
 
   function patchDoc(patch: Partial<typeof doc>) {
-    props.onChange({ ...tab.request, document: { ...doc, ...patch } });
+    props.onChange({ ...current.request, document: { ...doc, ...patch } });
   }
 
   async function send() {
@@ -150,7 +183,7 @@ export function RequestWorkbench(props: {
       }>("request.send", {
         executionId: id,
         workspaceId: props.workspaceId,
-        requestId: tab.request.id,
+        requestId: current.request.id,
         document: doc,
         authChain: props.authChain,
         environmentId: props.environmentId
@@ -179,22 +212,7 @@ export function RequestWorkbench(props: {
 
   return (
     <div className="flex h-full flex-col bg-[var(--canvas)]">
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--panel)] px-1">
-        {props.tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => props.onSelect(t.id)}
-            className={`group flex items-center gap-2 border-r border-[var(--border)] px-3 py-2 text-xs ${t.id === props.activeId ? "bg-[var(--canvas)]" : ""}`}
-          >
-            {t.pinned ? "• " : ""}
-            {t.dirty ? "● " : ""}
-            {t.request.name}
-            <span className="hidden text-[var(--muted)] group-hover:inline" onClick={(e) => (e.stopPropagation(), props.onClose(t.id))}>
-              ×
-            </span>
-          </button>
-        ))}
-      </div>
+      {tabBar}
       <div className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--panel)] px-3 py-2">
         <select
           className="rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs"

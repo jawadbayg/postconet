@@ -22,10 +22,10 @@ export async function listCookies(jarJson: string | null): Promise<Array<{ key: 
   const jar = await CookieJar.fromJSON(jarJson);
   const cookies = await jar.serialize();
   return (cookies.cookies ?? []).map((c) => ({
-    key: c.key,
+    key: c.key ?? "",
     value: c.value ?? "",
-    domain: c.domain,
-    path: c.path
+    domain: typeof c.domain === "string" ? c.domain : undefined,
+    path: typeof c.path === "string" ? c.path : undefined
   }));
 }
 

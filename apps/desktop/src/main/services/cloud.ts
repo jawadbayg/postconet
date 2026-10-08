@@ -2,7 +2,7 @@ import { createClient, type Session } from "@supabase/supabase-js";
 import { supabaseAnonKey, supabaseUrl, isCloudConfigured } from "../config.js";
 import { runtime } from "./state.js";
 import { saveSession, clearSession, loadSession } from "./session.js";
-import { closeAccount, openAccount, mustRepo } from "./studio.js";
+import { closeAccount, openAccount, mustRepo, ensureWorkspaceIfEmpty } from "./studio.js";
 import { summarizeState, type ChangeLogRow } from "@postconet/core";
 import { BrowserWindow } from "electron";
 
@@ -36,6 +36,8 @@ export async function restoreSession() {
   runtime.user = data.user;
   openAccount(data.user.id);
   await hydrateFromCloud();
+  ensureWorkspaceIfEmpty(data.user.id);
+  await acceptPendingInvites();
   subscribeRealtime();
   return { user: publicUser(), cloudConfigured: true };
 }
@@ -52,7 +54,7 @@ export async function signUp(email: string, password: string, displayName: strin
   const { data, error } = await runtime.supabase.auth.signUp({
     email,
     password,
-    options: { data: { display_name: displayName } }
+    options: { data: { display_name: displayName }, emailRedirectTo: "postconet://auth/callback" }
   });
   if (error) throw error;
   return { needsVerification: !data.session, user: data.user ? { id: data.user.id, email: data.user.email } : null };
@@ -69,11 +71,18 @@ export async function signIn(email: string, password: string) {
   closeAccount();
   openAccount(data.user.id);
   await hydrateFromCloud();
+  ensureWorkspaceIfEmpty(data.user.id);
+  await acceptPendingInvites();
   subscribeRealtime();
   return publicUser();
 }
 
 export async function signOut() {
+  if (realtimeChannel && runtime.supabase) {
+    await runtime.supabase.removeChannel(realtimeChannel);
+  }
+  realtimeChannel = null;
+  subscribed = false;
   await runtime.supabase?.auth.signOut();
   clearSession();
   runtime.user = null;
@@ -84,7 +93,7 @@ export async function signOut() {
 export async function resetPassword(email: string) {
   if (!runtime.supabase) runtime.supabase = createAuthedClient();
   if (!runtime.supabase) throw new Error("Cloud is not configured");
-  const { error } = await runtime.supabase.auth.resetPasswordForEmail(email);
+  const { error } = await runtime.supabase.auth.resetPasswordForEmail(email, { redirectTo: "postconet://auth/callback" });
   if (error) throw error;
 }
 
@@ -111,27 +120,44 @@ export async function hydrateFromCloud() {
     runtime.lastHydration = { phase: "Downloading collections", detail: ws.name };
     emit("sync.progress", runtime.lastHydration);
     const payload = (ws.payload as object) ?? {};
-    repo.upsertWorkspace(
-      {
-        id: ws.id,
-        name: ws.name,
-        kind: ws.kind,
-        organizationId: ws.organization_id,
-        ownerUserId: ws.owner_user_id,
-        description: ws.description,
-        archivedAt: ws.archived_at,
-        deletedAt: ws.deleted_at,
-        version: Number(ws.version),
-        updatedAt: ws.updated_at,
-        createdAt: ws.created_at,
-        ...payload
-      } as never,
-      false
-    );
-    await pullEntity("collections", ws.id, (row) => repo.upsertCollection(row.payload as never, false));
-    await pullEntity("folders", ws.id, (row) => repo.upsertFolder(row.payload as never, false));
-    await pullEntity("requests", ws.id, (row) => repo.upsertRequest(row.payload as never, false));
-    await pullEntity("environments", ws.id, (row) => repo.upsertEnvironment(row.payload as never, false));
+    const incomingWs = {
+      id: ws.id,
+      name: ws.name,
+      kind: ws.kind,
+      organizationId: ws.organization_id,
+      ownerUserId: ws.owner_user_id,
+      description: ws.description,
+      archivedAt: ws.archived_at,
+      deletedAt: ws.deleted_at,
+      version: Number(ws.version),
+      updatedAt: ws.updated_at,
+      createdAt: ws.created_at,
+      ...payload
+    };
+    const localWs = repo.getWorkspace(ws.id);
+    if (!localWs || Number(ws.version) > localWs.version) {
+      repo.upsertWorkspace(incomingWs as never, false);
+    }
+    await pullEntity("collections", ws.id, (row) => {
+      const incoming = row.payload as { id: string; version: number };
+      const local = repo.getCollection(incoming.id);
+      if (!local || incoming.version > local.version) repo.upsertCollection(row.payload as never, false);
+    });
+    await pullEntity("folders", ws.id, (row) => {
+      const incoming = row.payload as { id: string; version: number };
+      const local = repo.getFolder(incoming.id);
+      if (!local || incoming.version > local.version) repo.upsertFolder(row.payload as never, false);
+    });
+    await pullEntity("requests", ws.id, (row) => {
+      const incoming = row.payload as { id: string; version: number };
+      const local = repo.getRequest(incoming.id);
+      if (!local || incoming.version > local.version) repo.upsertRequest(row.payload as never, false);
+    });
+    await pullEntity("environments", ws.id, (row) => {
+      const incoming = row.payload as { id: string; version: number };
+      const local = repo.getEnvironment(incoming.id);
+      if (!local || incoming.version > local.version) repo.upsertEnvironment(row.payload as never, false);
+    });
     const cursor = await runtime.supabase.from("change_log").select("seq").eq("workspace_id", ws.id).order("seq", { ascending: false }).limit(1);
     repo.setCursor(ws.id, cursor.data?.[0]?.seq ?? 0);
   }
@@ -166,10 +192,45 @@ export async function pushQueue() {
     return;
   }
   const applied = new Set((data?.applied ?? []).map((a: { idempotencyKey: string }) => a.idempotencyKey));
+  const rejected = (data?.rejected ?? []) as Array<{ idempotencyKey: string; reason: string }>;
   for (const op of ops) {
-    if (applied.has(op.idempotencyKey)) repo.ackOp(op.id);
-    else repo.markOp(op.id, "failed", "rejected");
+    if (applied.has(op.idempotencyKey)) {
+      repo.ackOp(op.id);
+      continue;
+    }
+    const reason = rejected.find((r) => r.idempotencyKey === op.idempotencyKey)?.reason ?? "rejected";
+    if (reason === "conflict" && op.workspaceId) {
+      repo.addConflict(op.workspaceId, op.entityId, { op, reason });
+      repo.markOp(op.id, "conflict", "Remote version is newer. Your local edit was kept and flagged.");
+    } else {
+      repo.markOp(op.id, "failed", reason);
+    }
   }
+}
+
+export async function acceptPendingInvites(token?: string) {
+  if (!runtime.supabase || !runtime.user) return { accepted: 0 };
+  const { data, error } = await runtime.supabase.functions.invoke("share-accept", { body: token ? { token } : {} });
+  if (error) throw error;
+  await hydrateFromCloud();
+  return { accepted: Number(data?.accepted ?? 0) };
+}
+
+export async function listNotifications() {
+  if (!runtime.supabase || !runtime.user) return [];
+  const { data, error } = await runtime.supabase
+    .from("notifications")
+    .select("id, kind, title, body, payload, read_at, created_at")
+    .eq("user_id", runtime.user.id)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function markNotificationRead(id: string) {
+  if (!runtime.supabase) return;
+  await runtime.supabase.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
 }
 
 export async function pullWorkspace(workspaceId: string) {
@@ -187,31 +248,85 @@ export async function pullWorkspace(workspaceId: string) {
 
 function applyChange(row: ChangeLogRow) {
   const repo = mustRepo();
-  const payload = row.payload;
+  if (!row.payload || typeof row.payload !== "object" || Array.isArray(row.payload) || !("id" in row.payload)) return;
+  const incoming = row.payload as { id: string; version?: number };
+  const incomingVersion = Number(incoming.version ?? 0);
+  const keepLocal = (localVersion: number | undefined) => localVersion != null && localVersion >= incomingVersion;
   if (row.op === "delete") {
-    if (row.entityType === "request" && payload && typeof payload === "object") {
-      repo.upsertRequest({ ...(payload as never), deletedAt: new Date().toISOString() }, false);
+    if (row.entityType === "request") {
+      const local = repo.getRequest(incoming.id);
+      if (keepLocal(local?.version)) {
+        if (row.workspaceId) repo.addConflict(row.workspaceId, incoming.id, { row, reason: "local_newer" });
+        return;
+      }
+      repo.upsertRequest({ ...(incoming as object), deletedAt: new Date().toISOString() } as never, false);
     }
     return;
   }
-  if (row.entityType === "request") repo.upsertRequest(payload as never, false);
-  if (row.entityType === "collection") repo.upsertCollection(payload as never, false);
-  if (row.entityType === "folder") repo.upsertFolder(payload as never, false);
-  if (row.entityType === "environment") repo.upsertEnvironment(payload as never, false);
-  if (row.entityType === "workspace") repo.upsertWorkspace(payload as never, false);
+  if (row.entityType === "request") {
+    const local = repo.getRequest(incoming.id);
+    if (keepLocal(local?.version)) {
+      if (local && incomingVersion < local.version && row.workspaceId) repo.addConflict(row.workspaceId, incoming.id, { row, reason: "local_newer" });
+      return;
+    }
+    repo.upsertRequest(incoming as never, false);
+  }
+  if (row.entityType === "collection") {
+    const local = repo.getCollection(incoming.id);
+    if (keepLocal(local?.version)) return;
+    repo.upsertCollection(incoming as never, false);
+  }
+  if (row.entityType === "folder") {
+    const local = repo.getFolder(incoming.id);
+    if (keepLocal(local?.version)) return;
+    repo.upsertFolder(incoming as never, false);
+  }
+  if (row.entityType === "environment") {
+    const local = repo.getEnvironment(incoming.id);
+    if (keepLocal(local?.version)) return;
+    repo.upsertEnvironment(incoming as never, false);
+  }
+  if (row.entityType === "workspace") {
+    const local = repo.getWorkspace(incoming.id);
+    if (keepLocal(local?.version)) return;
+    repo.upsertWorkspace(incoming as never, false);
+  }
 }
 
 let subscribed = false;
+let realtimeChannel: ReturnType<NonNullable<typeof runtime.supabase>["channel"]> | null = null;
 function subscribeRealtime() {
-  if (!runtime.supabase || subscribed) return;
+  if (!runtime.supabase || !runtime.user || subscribed) return;
   subscribed = true;
-  runtime.supabase
+  realtimeChannel = runtime.supabase
     .channel("changes")
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "change_log" }, (payload) => {
-      applyChange(payload.new as ChangeLogRow);
+      const raw = payload.new as Record<string, unknown>;
+      applyChange({
+        seq: Number(raw.seq),
+        workspaceId: String(raw.workspaceId ?? raw.workspace_id ?? ""),
+        entityType: (raw.entityType ?? raw.entity_type) as ChangeLogRow["entityType"],
+        entityId: String(raw.entityId ?? raw.entity_id ?? ""),
+        op: raw.op as ChangeLogRow["op"],
+        version: Number(raw.version),
+        payload: raw.payload,
+        actorId: String(raw.actorId ?? raw.actor_id ?? ""),
+        idempotencyKey: String(raw.idempotencyKey ?? raw.idempotency_key ?? ""),
+        createdAt: String(raw.createdAt ?? raw.created_at ?? "")
+      });
       emit("sync.live", payload.new);
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "memberships" }, () => {
+      void hydrateFromCloud();
+    })
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${runtime.user.id}` },
+      (payload) => {
+        emit("notify", payload.new);
+      }
+    )
+    .on("postgres_changes", { event: "*", schema: "public", table: "resource_shares" }, () => {
       void hydrateFromCloud();
     })
     .subscribe();

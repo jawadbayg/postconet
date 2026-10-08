@@ -8,6 +8,8 @@ This is not a UI mock. Sending a request executes on the machine’s network sta
 
 Edit `brand/brand.json` (keep `packages/core/src/brand.ts` in sync). The UI, protocol scheme, user-agent, and packaging `appId` are driven from that configuration.
 
+The product mark is fixed at `resources/icons/postconet_logo.png`. That file is the favicon, window/dock icon, packaged macOS `.icns`, and in-app logo. Do not swap it per-screen.
+
 ## Quick start
 
 ```bash
@@ -18,7 +20,7 @@ pnpm --filter @postconet/persistence test
 pnpm dev
 ```
 
-Continue **offline** from the sign-in screen if cloud is not configured. See `docs/SETUP.md`.
+Continue **offline** from the sign-in screen if cloud is not configured. Accounts, sync, and sharing need one developer-owned Supabase project; follow the dashboard walkthrough in `docs/SETUP.md` before applying migrations. Never put a service-role key in the desktop app.
 
 ## Layout
 

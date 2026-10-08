@@ -15,7 +15,7 @@ Provision a project and apply `supabase/migrations`. Configure:
 - RLS: enabled on every client-accessible table (enforced in migrations)
 - Realtime: enabled for `change_log`, `collab_updates`, `presence`, `memberships`
 - Storage: private buckets `attachments` and `backups` with policies in migrations
-- Edge Functions: `invite-accept`, `account-delete`, `sync-push`, `sync-pull`, `secret-unwrap`, `monitor-dispatch`, `public-docs`
+- Edge Functions: `invite-accept`, `account-delete`, `sync-push`, `sync-pull`, `secret-unwrap`, `monitor-dispatch`, `public-docs`, `share-invite`, `share-accept`, `share-manage`, `share-landing`
 
 **Free tier limits:** projects may pause, Edge Functions have CPU/wall-clock limits, Realtime connections are capped, and outbound email uses a shared SMTP path with rate limits. This application will not pretend those services are unlimited or always on.
 
@@ -46,4 +46,8 @@ An unsigned local build is **not** notarized. Gatekeeper will warn. Documented i
 
 ## Email
 
-Password reset and verification emails are sent by Supabase Auth. Configure a custom SMTP provider for production. The desktop app does not send email itself.
+**Auth** (sign-up verification, password reset): Supabase Auth. Configure custom SMTP under Authentication → SMTP Settings for production. The desktop app does not send these.
+
+**Sharing invitations**: Resend, called from the `share-invite` Edge Function. Set `RESEND_API_KEY`, `INVITE_FROM_EMAIL`, and `APP_INVITE_URL` as **Edge Function secrets**. Do not expect Auth emails to deliver collection-share links. Recipients on Gmail, Outlook, and custom domains use the same HTML button; access is bound to the verified inbox that received the invite.
+
+Never put Resend or service-role credentials in the desktop binary. See `docs/SETUP.md`.

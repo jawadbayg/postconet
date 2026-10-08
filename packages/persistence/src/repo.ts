@@ -110,7 +110,7 @@ export class StudioRepo {
       .prepare(
         `INSERT INTO folders (id, workspace_id, collection_id, parent_id, name, sort_order, archived_at, deleted_at, version, updated_at, created_at, payload)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent_id=excluded.parent_id, sort_order=excluded.sort_order, payload=excluded.payload, version=excluded.version, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at`
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, collection_id=excluded.collection_id, parent_id=excluded.parent_id, sort_order=excluded.sort_order, payload=excluded.payload, version=excluded.version, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at`
       )
       .run(
         folder.id,
@@ -135,7 +135,7 @@ export class StudioRepo {
       .prepare(
         `INSERT INTO requests (id, workspace_id, collection_id, folder_id, project_id, name, protocol, sort_order, favorite, archived_at, deleted_at, version, updated_at, created_at, payload)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name=excluded.name, folder_id=excluded.folder_id, sort_order=excluded.sort_order, favorite=excluded.favorite, payload=excluded.payload, version=excluded.version, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at, protocol=excluded.protocol`
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, collection_id=excluded.collection_id, folder_id=excluded.folder_id, sort_order=excluded.sort_order, favorite=excluded.favorite, payload=excluded.payload, version=excluded.version, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at, protocol=excluded.protocol`
       )
       .run(
         req.id,
@@ -219,6 +219,53 @@ export class StudioRepo {
   getRequest(id: string): SavedRequest | undefined {
     const row = this.db.prepare("SELECT payload FROM requests WHERE id = ?").get(id) as { payload: string } | undefined;
     return row ? (JSON.parse(row.payload) as SavedRequest) : undefined;
+  }
+
+  getCollection(id: string): Collection | undefined {
+    const row = this.db.prepare("SELECT payload FROM collections WHERE id = ?").get(id) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Collection) : undefined;
+  }
+
+  getFolder(id: string): Folder | undefined {
+    const row = this.db.prepare("SELECT payload FROM folders WHERE id = ?").get(id) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Folder) : undefined;
+  }
+
+  getEnvironment(id: string): Environment | undefined {
+    const row = this.db.prepare("SELECT payload FROM environments WHERE id = ?").get(id) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Environment) : undefined;
+  }
+
+  getMeta(key: string): string | undefined {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value;
+  }
+
+  setMeta(key: string, value: string) {
+    this.db.prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value);
+  }
+
+  folderDescendants(folderId: string): string[] {
+    const folders = this.db
+      .prepare("SELECT payload FROM folders WHERE deleted_at IS NULL")
+      .all()
+      .map((row) => JSON.parse(String((row as { payload: string }).payload)) as Folder);
+    const ids = new Set<string>([folderId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const folder of folders) {
+        if (folder.parentId && ids.has(folder.parentId) && !ids.has(folder.id)) {
+          ids.add(folder.id);
+          grew = true;
+        }
+      }
+    }
+    return [...ids];
+  }
+
+  clearHistory(workspaceId: string) {
+    this.db.prepare("DELETE FROM history WHERE workspace_id = ?").run(workspaceId);
   }
 
   listEnvironments(workspaceId: string): Environment[] {

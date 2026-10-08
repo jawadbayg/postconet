@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@postconet/core": "workspace:*",
-    "@supabase/supabase-js": "2.47.10"
+    "@supabase/supabase-js": "2.117.3"
   },
   "devDependencies": {
     "tsx": "4.19.2",

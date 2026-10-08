@@ -11,5 +11,6 @@
   "website": "https://postconet.app",
   "supportEmail": "support@postconet.app",
   "oauthCallbackPath": "/oauth/callback",
-  "defaultUserAgent": "PostConetAPIStudio/0.1.0"
+  "defaultUserAgent": "PostConetAPIStudio/0.1.0",
+  "icon": "resources/icons/postconet_logo.png"
 }

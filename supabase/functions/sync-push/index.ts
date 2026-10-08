@@ -31,15 +31,59 @@ Deno.serve(async (req) => {
   const rejected: Array<{ idempotencyKey: string; reason: string }> = [];
 
   for (const op of body.ops ?? []) {
-    const { data: role } = await supabase.rpc("workspace_role", { ws: op.workspaceId });
-    if (!role || !["editor", "administrator", "owner"].includes(role as string)) {
-      rejected.push({ idempotencyKey: op.idempotencyKey, reason: "forbidden" });
-      continue;
-    }
     const table = tableFor(op.entityType);
     if (!table) {
       rejected.push({ idempotencyKey: op.idempotencyKey, reason: "unknown entity" });
       continue;
+    }
+    if (op.entityType === "collection" || op.entityType === "folder" || op.entityType === "request") {
+      const payload = op.payload as Record<string, unknown>;
+      const { data: direct } = await supabase.rpc("can_edit_resource", {
+        p_kind: op.entityType,
+        p_id: op.entityId,
+        p_workspace: op.workspaceId
+      });
+      let allowed = Boolean(direct);
+      if (!allowed && op.entityType !== "collection") {
+        const collectionId = payload.collectionId as string | undefined;
+        if (collectionId) {
+          const { data: colEdit } = await supabase.rpc("can_edit_resource", {
+            p_kind: "collection",
+            p_id: collectionId,
+            p_workspace: op.workspaceId
+          });
+          allowed = Boolean(colEdit);
+        }
+        const folderId = payload.folderId as string | undefined;
+        if (!allowed && folderId) {
+          const { data: folderEdit } = await supabase.rpc("can_edit_resource", {
+            p_kind: "folder",
+            p_id: folderId,
+            p_workspace: op.workspaceId
+          });
+          allowed = Boolean(folderEdit);
+        }
+      }
+      if (!allowed) {
+        const { data: role } = await supabase.rpc("workspace_role", { ws: op.workspaceId });
+        if (!role || !["editor", "administrator", "owner"].includes(role as string)) {
+          rejected.push({ idempotencyKey: op.idempotencyKey, reason: "forbidden" });
+          continue;
+        }
+      }
+    } else {
+      const { data: role } = await supabase.rpc("workspace_role", { ws: op.workspaceId });
+      if (!role || !["editor", "administrator", "owner"].includes(role as string)) {
+        rejected.push({ idempotencyKey: op.idempotencyKey, reason: "forbidden" });
+        continue;
+      }
+    }
+    if (table !== "globals") {
+      const { data: current } = await supabase.from(table).select("version").eq("id", op.entityId).maybeSingle();
+      if (current && Number(current.version) > Number(op.version)) {
+        rejected.push({ idempotencyKey: op.idempotencyKey, reason: "conflict", currentVersion: current.version });
+        continue;
+      }
     }
     const { error: dup } = await supabase.from("change_log").insert({
       workspace_id: op.workspaceId,

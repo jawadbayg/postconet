@@ -51,10 +51,11 @@ export function setField(doc: Y.Doc, key: keyof CollabTextFields, value: string)
       text = new Y.Text();
       map.set(key as string, text);
     }
-    const current = text.toString();
+    const ytext = text as Y.Text;
+    const current = ytext.toString();
     if (current === value) return;
-    text.delete(0, current.length);
-    text.insert(0, value);
+    ytext.delete(0, current.length);
+    ytext.insert(0, value);
   });
 }
 

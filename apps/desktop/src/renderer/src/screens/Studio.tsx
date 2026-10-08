@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Settings } from "lucide-react";
 import { invoke } from "../lib/ipc";
 import type { SessionInfo } from "../App";
-import { Sidebar } from "../components/Sidebar";
+import { Sidebar, type SidebarAction, type DragItem, type DropTarget } from "../components/Sidebar";
 import { RequestWorkbench } from "../components/RequestWorkbench";
 import { StatusBar } from "../components/StatusBar";
 import { CommandPalette } from "../components/CommandPalette";
 import { ImportModal } from "../components/ImportModal";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ShareModal } from "../components/ShareModal";
+import { EnvPanel } from "../components/EnvPanel";
+import { HistoryPanel } from "../components/HistoryPanel";
+import { SettingsScreen } from "../components/SettingsScreen";
+import { NotificationBell } from "../components/NotificationBell";
+import { BrandMark } from "../components/BrandMark";
 
 export type Tree = {
   workspace?: { id: string; name: string; kind: string };
@@ -38,6 +46,9 @@ export type RequestRecord = {
 
 export type Tab = { id: string; request: RequestRecord; dirty: boolean; pinned: boolean };
 
+type Rail = "api" | "env" | "hist" | "settings";
+type MenuTarget = { kind: "collection" | "folder" | "request"; id: string; name: string; collectionId?: string };
+
 export function Studio(props: {
   session: SessionInfo;
   theme: "light" | "dark";
@@ -54,6 +65,13 @@ export function Studio(props: {
   const [importer, setImporter] = useState(false);
   const [sync, setSync] = useState(props.session);
   const [search, setSearch] = useState("");
+  const [rail, setRail] = useState<Rail>("api");
+  const [rename, setRename] = useState<MenuTarget | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirm, setConfirm] = useState<MenuTarget | null>(null);
+  const [share, setShare] = useState<MenuTarget | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const signedIn = Boolean(props.session.user && props.session.user.id !== "local");
 
   const load = useCallback(async (id?: string) => {
     try {
@@ -119,6 +137,7 @@ export function Studio(props: {
   function open(req: RequestRecord) {
     setTabs((prev) => (prev.some((t) => t.id === req.id) ? prev : [...prev, { id: req.id, request: req, dirty: false, pinned: false }]));
     setActiveId(req.id);
+    setRail("api");
   }
 
   function updateActive(request: RequestRecord, dirty = true) {
@@ -132,6 +151,53 @@ export function Studio(props: {
     if (workspaceId) await load(workspaceId);
   }
 
+  function onSidebarAction(action: SidebarAction, target: MenuTarget) {
+    setActionError(null);
+    if (action === "rename") {
+      setRename(target);
+      setRenameValue(target.name);
+    }
+    if (action === "delete") setConfirm(target);
+    if (action === "share") setShare(target);
+  }
+
+  async function onDrop(item: DragItem, target: DropTarget) {
+    setActionError(null);
+    try {
+      const collectionId = target.kind === "collection" ? target.id : target.collectionId;
+      const folderId = target.kind === "folder" ? target.id : target.kind === "request" ? target.folderId : null;
+      if (target.kind === "request" && target.id === item.id) return;
+      await invoke("workspace.moveRequest", { requestId: item.id, collectionId, folderId });
+      setTabs((prev) => prev.map((t) => (t.id === item.id ? { ...t, request: { ...t.request, collectionId, folderId } } : t)));
+      if (workspaceId) await load(workspaceId);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function addRequestHere() {
+    if (!workspaceId) return;
+    const current = tabs.find((t) => t.id === activeId)?.request;
+    const collectionId = current?.collectionId ?? tree?.collections[0]?.id;
+    const folderId = current?.folderId ?? null;
+    if (!collectionId) {
+      await onNewRequest();
+      return;
+    }
+    try {
+      const req = await invoke<RequestRecord>("workspace.createRequest", {
+        workspaceId,
+        collectionId,
+        folderId,
+        name: "New request"
+      });
+      await load(workspaceId);
+      open(req);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const authChain = useMemo(() => {
     if (!active || !tree) return [{ type: "none", params: {} }];
     const col = tree.collections.find((c) => c.id === active.request.collectionId);
@@ -139,16 +205,18 @@ export function Studio(props: {
     return [col?.auth ?? { type: "none", params: {} }, folder?.auth ?? { type: "inherit", params: {} }, (active.request.document as { auth?: { type: string; params: Record<string, string> } }).auth ?? { type: "inherit", params: {} }];
   }, [active, tree]);
 
+  async function goLocal() {
+    await invoke("auth.signOut");
+    props.onSession({ ...props.session, user: { id: "local", email: "", displayName: "Local" } });
+  }
+
   return (
     <div className="flex h-full min-h-screen flex-1 flex-col bg-[#f4f5f7] text-[#12151a] dark:bg-[#0f1115] dark:text-[#eef0f4]">
       <header className="titlebar-drag flex h-12 items-center justify-between border-b border-[var(--border)] bg-[var(--panel)] pl-20 pr-4">
         <div className="titlebar-no-drag flex items-center gap-3 text-sm">
+          <BrandMark size={22} />
           <span className="font-medium">PostConet</span>
-          <select
-            className="rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs"
-            value={workspaceId ?? ""}
-            onChange={(e) => void load(e.target.value)}
-          >
+          <select className="rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs" value={workspaceId ?? ""} onChange={(e) => void load(e.target.value)}>
             {workspaces.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name}
@@ -169,69 +237,118 @@ export function Studio(props: {
           <button className="rounded-md border border-[var(--border)] px-2 py-1 text-xs" onClick={() => setImporter(true)}>
             Import
           </button>
+          {signedIn && <NotificationBell />}
           <button className="rounded-md border border-[var(--border)] px-2 py-1 text-xs" onClick={() => props.onTheme(props.theme === "dark" ? "light" : "dark")}>
             {props.theme === "dark" ? "Light" : "Dark"}
           </button>
         </div>
       </header>
+      {actionError && (
+        <div className="border-b border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+          {actionError}
+        </div>
+      )}
       <div className="flex min-h-0 flex-1">
         <div className="flex w-12 flex-col items-center gap-2 border-r border-[var(--border)] bg-[var(--panel)] py-3 text-[10px] text-[var(--muted)]">
-          <RailBtn label="API" active />
-          <RailBtn label="Env" />
-          <RailBtn label="Hist" />
+          <RailBtn label="API" active={rail === "api"} onClick={() => setRail("api")} />
+          <RailBtn label="Env" active={rail === "env"} onClick={() => setRail("env")} />
+          <RailBtn label="Hist" active={rail === "hist"} onClick={() => setRail("hist")} />
+          <div className="mt-auto">
+            <button
+              title="Settings"
+              onClick={() => setRail("settings")}
+              className={`flex h-10 w-10 items-center justify-center rounded-md ${rail === "settings" ? "bg-[var(--canvas)] text-[var(--fg)]" : "hover:bg-[var(--canvas)]"}`}
+            >
+              <Settings size={16} />
+            </button>
+          </div>
         </div>
-        <PanelGroup direction="horizontal" className="flex-1">
-          <Panel defaultSize={22} minSize={14}>
-            <Sidebar
-              tree={tree}
-              onOpen={open}
-              onNewCollection={async () => {
-                if (!workspaceId) return;
-                await invoke("workspace.createCollection", { workspaceId, name: "New collection" });
-                await load(workspaceId);
-              }}
-              onNewFolder={async (collectionId, parentId) => {
-                if (!workspaceId) return;
-                await invoke("workspace.createFolder", { workspaceId, collectionId, parentId, name: "Folder" });
-                await load(workspaceId);
-              }}
-              onNewRequest={async (collectionId, folderId) => {
-                if (!workspaceId) return;
-                const req = await invoke<RequestRecord>("workspace.createRequest", { workspaceId, collectionId, folderId, name: "New request" });
-                await load(workspaceId);
-                open(req);
-              }}
-              onNewEnvironment={async () => {
-                if (!workspaceId) return;
-                await invoke("workspace.createEnvironment", { workspaceId, name: "Environment" });
-                await load(workspaceId);
-              }}
-              activeId={activeId}
-            />
-          </Panel>
-          <PanelResizeHandle className="w-px bg-[var(--border)]" />
-          <Panel minSize={40}>
-            <RequestWorkbench
-              tabs={tabs}
-              activeId={activeId}
-              onSelect={setActiveId}
-              onClose={(id) => {
-                setTabs((prev) => prev.filter((t) => t.id !== id));
-                if (activeId === id) setActiveId(tabs.find((t) => t.id !== id)?.id ?? null);
-              }}
-              onPin={(id) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)))}
-              onChange={(req) => updateActive(req, true)}
-              onSave={() => void saveActive()}
+        {rail === "api" && (
+          <PanelGroup direction="horizontal" className="flex-1">
+            <Panel defaultSize={22} minSize={14}>
+              <Sidebar
+                tree={tree}
+                onOpen={open}
+                onNewCollection={async () => {
+                  if (!workspaceId) return;
+                  try {
+                    await invoke("workspace.createCollection", { workspaceId, name: "New collection" });
+                    await load(workspaceId);
+                  } catch (e) {
+                    setActionError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+                onNewFolder={async (collectionId, parentId) => {
+                  if (!workspaceId) return;
+                  try {
+                    await invoke("workspace.createFolder", { workspaceId, collectionId, parentId, name: "Folder" });
+                    await load(workspaceId);
+                  } catch (e) {
+                    setActionError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+                onNewRequest={async (collectionId, folderId) => {
+                  if (!workspaceId) return;
+                  try {
+                    const req = await invoke<RequestRecord>("workspace.createRequest", { workspaceId, collectionId, folderId, name: "New request" });
+                    await load(workspaceId);
+                    open(req);
+                  } catch (e) {
+                    setActionError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+                onAction={onSidebarAction}
+                onDrop={onDrop}
+                activeId={activeId}
+              />
+            </Panel>
+            <PanelResizeHandle className="w-px bg-[var(--border)]" />
+            <Panel minSize={40}>
+              <RequestWorkbench
+                tabs={tabs}
+                activeId={activeId}
+                onSelect={setActiveId}
+                onClose={(id) => {
+                  setTabs((prev) => prev.filter((t) => t.id !== id));
+                  if (activeId === id) setActiveId(tabs.find((t) => t.id !== id)?.id ?? null);
+                }}
+                onPin={(id) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)))}
+                onChange={(req) => updateActive(req, true)}
+                onSave={() => void saveActive()}
+                workspaceId={workspaceId}
+                environmentId={environmentId}
+                environments={tree?.environments ?? []}
+                onEnvironment={setEnvironmentId}
+                authChain={authChain}
+                onAddRequest={() => void addRequestHere()}
+              />
+            </Panel>
+          </PanelGroup>
+        )}
+        {rail === "env" && (
+          <div className="min-w-0 flex-1">
+            <EnvPanel workspaceId={workspaceId} tree={tree} environmentId={environmentId} onEnvironment={setEnvironmentId} onReload={async () => { if (workspaceId) await load(workspaceId); }} />
+          </div>
+        )}
+        {rail === "hist" && (
+          <div className="min-w-0 flex-1">
+            <HistoryPanel workspaceId={workspaceId} onOpen={open} />
+          </div>
+        )}
+        {rail === "settings" && (
+          <div className="min-w-0 flex-1">
+            <SettingsScreen
+              session={sync}
+              theme={props.theme}
+              onTheme={props.onTheme}
+              onSession={props.onSession}
               workspaceId={workspaceId}
-              environmentId={environmentId}
-              environments={tree?.environments ?? []}
-              onEnvironment={setEnvironmentId}
-              authChain={authChain}
+              onSignOut={() => void goLocal()}
             />
-          </Panel>
-        </PanelGroup>
+          </div>
+        )}
       </div>
-      <StatusBar sync={sync} onSync={() => invoke("sync.now").then((s) => setSync(s as SessionInfo))} onSignOut={() => invoke("auth.signOut").then(() => location.reload())} />
+      <StatusBar sync={sync} onSync={() => invoke("sync.now").then((s) => setSync(s as SessionInfo))} onSignOut={() => void goLocal()} />
       {palette && (
         <CommandPalette
           onClose={() => setPalette(false)}
@@ -243,23 +360,93 @@ export function Studio(props: {
         />
       )}
       {importer && workspaceId && (
-        <ImportModal
-          workspaceId={workspaceId}
-          onClose={() => setImporter(false)}
-          onImported={() => {
-            setImporter(false);
-            void load(workspaceId);
+        <ImportModal workspaceId={workspaceId} onClose={() => setImporter(false)} onImported={() => { setImporter(false); void load(workspaceId); }} />
+      )}
+      {rename && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <form
+            className="w-full max-w-sm rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await invoke("workspace.rename", { type: rename.kind, id: rename.id, name: renameValue });
+                if (rename.kind === "request") {
+                  const name = renameValue.trim();
+                  setTabs((prev) => prev.map((t) => (t.id === rename.id ? { ...t, request: { ...t.request, name } } : t)));
+                }
+                setRename(null);
+                if (workspaceId) await load(workspaceId);
+              } catch (err) {
+                setActionError(err instanceof Error ? err.message : String(err));
+              }
+            }}
+          >
+            <div className="text-sm font-medium">Rename {rename.kind}</div>
+            <input
+              className="mt-3 w-full rounded-md border border-[var(--border)] bg-[var(--canvas)] px-3 py-2 text-sm"
+              value={renameValue}
+              onChange={(e) => {
+                const name = e.target.value;
+                setRenameValue(name);
+                if (rename.kind === "request") {
+                  setTabs((prev) => prev.map((t) => (t.id === rename.id ? { ...t, request: { ...t.request, name } } : t)));
+                }
+              }}
+              autoFocus
+            />
+            <div className="mt-4 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                className="rounded-md border border-[var(--border)] px-3 py-1.5"
+                onClick={() => {
+                  if (rename.kind === "request") {
+                    setTabs((prev) => prev.map((t) => (t.id === rename.id ? { ...t, request: { ...t.request, name: rename.name } } : t)));
+                  }
+                  setRename(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-white">Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+      {confirm && (
+        <ConfirmDialog
+          title={`Delete ${confirm.kind}?`}
+          body={`“${confirm.name}” will be removed from this workspace. This syncs for anyone with access.`}
+          onCancel={() => setConfirm(null)}
+          onConfirm={async () => {
+            try {
+              await invoke("workspace.delete", { type: confirm.kind, id: confirm.id });
+              if (confirm.kind === "request") {
+                setTabs((prev) => prev.filter((t) => t.id !== confirm.id));
+                if (activeId === confirm.id) setActiveId(null);
+              }
+              setConfirm(null);
+              if (workspaceId) await load(workspaceId);
+            } catch (err) {
+              setActionError(err instanceof Error ? err.message : String(err));
+            }
           }}
+        />
+      )}
+      {share && workspaceId && (
+        <ShareModal
+          signedIn={signedIn}
+          target={{ kind: share.kind, id: share.id, name: share.name, workspaceId }}
+          onClose={() => setShare(null)}
         />
       )}
     </div>
   );
 }
 
-function RailBtn({ label, active }: { label: string; active?: boolean }) {
+function RailBtn({ label, active, onClick }: { label: string; active?: boolean; onClick: () => void }) {
   return (
-    <div className={`flex h-10 w-10 items-center justify-center rounded-md ${active ? "bg-[var(--canvas)] font-medium text-[var(--fg)]" : ""}`}>
+    <button title={label} onClick={onClick} className={`flex h-10 w-10 items-center justify-center rounded-md ${active ? "bg-[var(--canvas)] font-medium text-[var(--fg)]" : "hover:bg-[var(--canvas)]"}`}>
       {label}
-    </div>
+    </button>
   );
 }

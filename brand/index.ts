@@ -14,6 +14,7 @@ export type Brand = {
   supportEmail: string;
   oauthCallbackPath: string;
   defaultUserAgent: string;
+  icon: string;
 };
 
 export const brand: Brand = brandJson;
