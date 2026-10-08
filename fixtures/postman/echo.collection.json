@@ -1,0 +1,64 @@
+{
+  "info": {
+    "name": "PostConet Echo Sample",
+    "description": "Labeled sample content for import/export and runner tests. Not production data.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:9", "type": "string" }
+  ],
+  "auth": { "type": "noauth" },
+  "item": [
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "List users",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/get?id=1&id=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["get"],
+              "query": [
+                { "key": "id", "value": "1" },
+                { "key": "id", "value": "2" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create user",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Ada\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/post"
+          }
+        }
+      ]
+    }
+  ]
+}

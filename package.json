@@ -1,0 +1,23 @@
+{
+  "name": "postconet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PostConet API Studio — desktop API development and testing",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @postconet/desktop dev",
+    "build": "pnpm -r --if-present build",
+    "test": "pnpm -r --if-present test",
+    "test:core": "pnpm --filter @postconet/core test",
+    "test:persistence": "pnpm --filter @postconet/persistence test",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "cli": "pnpm --filter @postconet/cli start",
+    "worker": "pnpm --filter @postconet/worker start",
+    "pack:mac": "pnpm --filter @postconet/desktop pack:mac",
+    "postinstall": "pnpm --filter @postconet/desktop rebuild:native"
+  }
+}

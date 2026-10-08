@@ -1,0 +1,14 @@
+openapi: 3.0.3
+info:
+  title: Sample Ping API
+  version: "1.0.0"
+  description: Labeled sample content.
+servers:
+  - url: http://127.0.0.1:4010
+paths:
+  /ping:
+    get:
+      summary: Ping
+      responses:
+        "200":
+          description: ok

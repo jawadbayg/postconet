@@ -1,0 +1,4 @@
+# Labeled sample schema
+type Query {
+  hello: String
+}

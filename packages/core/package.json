@@ -1,0 +1,49 @@
+{
+  "name": "@postconet/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./brand": "./src/brand/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "aws4": "1.13.2",
+    "csv-parse": "5.6.0",
+    "fast-xml-parser": "4.5.1",
+    "graphql": "16.10.0",
+    "graphql-ws": "5.16.0",
+    "jose": "5.9.6",
+    "js-yaml": "4.1.0",
+    "mqtt": "5.10.4",
+    "nanoid": "5.0.9",
+    "oauth-1.0a": "2.2.6",
+    "protobufjs": "7.4.0",
+    "socket.io-client": "4.8.1",
+    "tough-cookie": "5.1.1",
+    "undici": "7.3.0",
+    "ws": "8.18.0",
+    "yaml": "2.7.0",
+    "yjs": "13.6.23",
+    "zod": "3.24.2"
+  },
+  "devDependencies": {
+    "@grpc/grpc-js": "1.12.6",
+    "@grpc/proto-loader": "0.7.13",
+    "@types/node": "24.2.0",
+    "@types/aws4": "1.11.6",
+    "@types/js-yaml": "4.0.9",
+    "@types/ws": "8.5.13",
+    "typescript": "5.7.3",
+    "vitest": "2.1.8"
+  }
+}

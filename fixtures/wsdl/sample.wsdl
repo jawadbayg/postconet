@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/">
+  <binding name="Calc">
+    <operation name="Add">
+      <soap:operation soapAction="Add"/>
+    </operation>
+  </binding>
+</definitions>

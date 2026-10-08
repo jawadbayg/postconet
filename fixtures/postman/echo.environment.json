@@ -1,0 +1,9 @@
+{
+  "id": "env-echo-sample",
+  "name": "Sample Local",
+  "values": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:9", "enabled": true, "type": "default" },
+    { "key": "token", "value": "sample-token-not-secret", "enabled": true, "type": "default" }
+  ],
+  "_postman_variable_scope": "environment"
+}
