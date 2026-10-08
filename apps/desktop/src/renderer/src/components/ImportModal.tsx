@@ -58,7 +58,7 @@ export function ImportModal(props: { workspaceId: string; onClose: () => void; o
           Import
           <button onClick={props.onClose}>×</button>
         </div>
-        <textarea className="min-h-0 flex-1 bg-[var(--canvas)] p-3 font-mono text-xs outline-none" placeholder="Paste Postman Collection v2.1, environment, OpenAPI, HAR, or a cURL command" value={text} onChange={(e) => setText(e.target.value)} />
+        <textarea className="min-h-0 flex-1 bg-[var(--canvas)] p-3 font-mono text-xs outline-none" value={text} onChange={(e) => setText(e.target.value)} />
         {preview && (
           <div className="max-h-40 overflow-auto border-t border-[var(--border)] p-3 text-xs">
             <div>

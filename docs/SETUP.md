@@ -158,6 +158,8 @@ Copy API URL + anon key from `npx supabase status` into `apps/desktop/.env`. Nev
 
 ## 5. Edge Functions (sharing + sync)
 
+After pulling sync changes, re-apply SQL (`0005_sync_atomicity.sql` or the latest `dashboard_bootstrap.sql`) and redeploy `sync-push` / `sync-pull` so version checks and revision history take effect.
+
 Deploy at least:
 
 - `sync-push`, `sync-pull`

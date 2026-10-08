@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Settings } from "lucide-react";
-import { invoke } from "../lib/ipc";
 import type { SessionInfo } from "../App";
-import { Sidebar, type SidebarAction, type DragItem, type DropTarget } from "../components/Sidebar";
+import { invoke } from "../lib/ipc";
+import { Sidebar, type SidebarAction, type SidebarFocus, type DragItem, type DropTarget } from "../components/Sidebar";
+import { AppSearch } from "../components/AppSearch";
 import { RequestWorkbench } from "../components/RequestWorkbench";
 import { StatusBar } from "../components/StatusBar";
 import { CommandPalette } from "../components/CommandPalette";
@@ -15,6 +16,7 @@ import { HistoryPanel } from "../components/HistoryPanel";
 import { SettingsScreen } from "../components/SettingsScreen";
 import { NotificationBell } from "../components/NotificationBell";
 import { BrandMark } from "../components/BrandMark";
+import { ConflictDialog } from "../components/ConflictDialog";
 
 export type Tree = {
   workspace?: { id: string; name: string; kind: string };
@@ -42,9 +44,28 @@ export type RequestRecord = {
   version: number;
   examples: unknown[];
   favorite: boolean;
+  deletedAt?: string | null;
 };
 
-export type Tab = { id: string; request: RequestRecord; dirty: boolean; pinned: boolean };
+export type Tab = {
+  id: string;
+  request: RequestRecord;
+  dirty: boolean;
+  pinned: boolean;
+  remoteUpdated?: boolean;
+  latestRemote?: RequestRecord;
+};
+
+type SaveRequestResult =
+  | { status: "saved"; request: RequestRecord }
+  | { status: "conflict"; draft: RequestRecord; latest: RequestRecord; deleted?: boolean };
+
+function asRequest(payload: unknown): RequestRecord | null {
+  if (!payload || typeof payload !== "object" || !("id" in payload)) return null;
+  const row = payload as RequestRecord;
+  if (!row.id) return null;
+  return row;
+}
 
 type Rail = "api" | "env" | "hist" | "settings";
 type MenuTarget = { kind: "collection" | "folder" | "request"; id: string; name: string; collectionId?: string };
@@ -64,14 +85,21 @@ export function Studio(props: {
   const [palette, setPalette] = useState(false);
   const [importer, setImporter] = useState(false);
   const [sync, setSync] = useState(props.session);
-  const [search, setSearch] = useState("");
+  const [focus, setFocus] = useState<SidebarFocus | null>(null);
   const [rail, setRail] = useState<Rail>("api");
   const [rename, setRename] = useState<MenuTarget | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirm, setConfirm] = useState<MenuTarget | null>(null);
   const [share, setShare] = useState<MenuTarget | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<{ draft: RequestRecord; latest: RequestRecord; deleted?: boolean } | null>(null);
   const signedIn = Boolean(props.session.user && props.session.user.id !== "local");
+  const workspaceIdRef = useRef(workspaceId);
+  const activeIdRef = useRef(activeId);
+  const tabsRef = useRef(tabs);
+  workspaceIdRef.current = workspaceId;
+  activeIdRef.current = activeId;
+  tabsRef.current = tabs;
 
   const load = useCallback(async (id?: string) => {
     try {
@@ -97,8 +125,36 @@ export function Studio(props: {
       if (action === "palette") setPalette(true);
       if (action === "import") setImporter(true);
       if (action === "new-request") void onNewRequest();
+      if (action === "save") void persistActive();
     });
-    const offSync = window.postconet.on("sync.status", (p) => setSync((s) => ({ ...s, ...(p as SessionInfo) })));
+    const offSync = window.postconet.on("sync.status", (p) =>
+      setSync((s) => {
+        const payload = p as SessionInfo;
+        const merged = { ...s, ...payload };
+        if (!payload.user && s.user) merged.user = s.user;
+        return merged;
+      })
+    );
+    const offChanged = window.postconet.on("sync.changed", (raw) => {
+      const event = raw as { entityType?: string; entityId?: string; op?: string; payload?: unknown };
+      void load(workspaceIdRef.current ?? undefined);
+      if (event.entityType !== "request" || !event.entityId) return;
+      const incoming = asRequest(event.payload);
+      setTabs((prev) =>
+        prev.flatMap((t) => {
+          if (t.id !== event.entityId) return [t];
+          if (event.op === "delete") {
+            if (t.dirty) {
+              return [{ ...t, remoteUpdated: true, latestRemote: incoming ?? t.request }];
+            }
+            return [];
+          }
+          if (!incoming) return [t];
+          if (t.dirty) return [{ ...t, remoteUpdated: true, latestRemote: incoming }];
+          return [{ ...t, request: incoming, dirty: false, remoteUpdated: false, latestRemote: undefined }];
+        })
+      );
+    });
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -109,9 +165,10 @@ export function Studio(props: {
     return () => {
       off();
       offSync();
+      offChanged();
       window.removeEventListener("keydown", onKey);
     };
-  }, []);
+  }, [load]);
 
   const active = tabs.find((t) => t.id === activeId) ?? null;
 
@@ -144,11 +201,34 @@ export function Studio(props: {
     setTabs((prev) => prev.map((t) => (t.id === request.id ? { ...t, request, dirty } : t)));
   }
 
+  async function persistActive(opts?: { overwrite?: boolean; expectedLatest?: number }) {
+    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
+    if (!tab) return;
+    try {
+      const result = await invoke<SaveRequestResult>("workspace.saveRequest", {
+        ...tab.request,
+        request: tab.request,
+        overwrite: opts?.overwrite,
+        expectedLatest: opts?.expectedLatest
+      });
+      if (result.status === "conflict") {
+        setConflict({ draft: result.draft, latest: result.latest, deleted: result.deleted });
+        setTabs((prev) =>
+          prev.map((t) => (t.id === tab.id ? { ...t, dirty: true, remoteUpdated: true, latestRemote: result.latest } : t))
+        );
+        return;
+      }
+      setConflict(null);
+      updateActive(result.request, false);
+      setTabs((prev) => prev.map((t) => (t.id === result.request.id ? { ...t, remoteUpdated: false, latestRemote: undefined } : t)));
+      if (workspaceIdRef.current) await load(workspaceIdRef.current);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function saveActive() {
-    if (!active) return;
-    const saved = await invoke<RequestRecord>("workspace.saveRequest", active.request);
-    updateActive(saved, false);
-    if (workspaceId) await load(workspaceId);
+    await persistActive();
   }
 
   function onSidebarAction(action: SidebarAction, target: MenuTarget) {
@@ -225,13 +305,28 @@ export function Studio(props: {
           </select>
         </div>
         <div className="titlebar-no-drag flex items-center gap-2">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search"
-            className="w-48 rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && search) setPalette(true);
+          <AppSearch
+            tree={tree}
+            onOpenRequest={(req) => {
+              open(req);
+              setFocus({
+                token: Date.now(),
+                collectionId: req.collectionId,
+                folderId: req.folderId,
+                highlightId: req.id
+              });
+            }}
+            onOpenCollection={(collectionId) => {
+              setRail("api");
+              setFocus({ token: Date.now(), collectionId, folderId: null, highlightId: collectionId });
+            }}
+            onOpenFolder={(collectionId, folderId) => {
+              setRail("api");
+              setFocus({ token: Date.now(), collectionId, folderId, highlightId: folderId });
+            }}
+            onOpenEnvironment={(environmentId) => {
+              setEnvironmentId(environmentId);
+              setRail("env");
             }}
           />
           <button className="rounded-md border border-[var(--border)] px-2 py-1 text-xs" onClick={() => setImporter(true)}>
@@ -268,6 +363,7 @@ export function Studio(props: {
             <Panel defaultSize={22} minSize={14}>
               <Sidebar
                 tree={tree}
+                focus={focus}
                 onOpen={open}
                 onNewCollection={async () => {
                   if (!workspaceId) return;
@@ -315,6 +411,10 @@ export function Studio(props: {
                 onPin={(id) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)))}
                 onChange={(req) => updateActive(req, true)}
                 onSave={() => void saveActive()}
+                remoteUpdated={Boolean(active?.remoteUpdated)}
+                onReviewRemote={() => {
+                  if (active?.latestRemote) setConflict({ draft: active.request, latest: active.latestRemote });
+                }}
                 workspaceId={workspaceId}
                 environmentId={environmentId}
                 environments={tree?.environments ?? []}
@@ -348,7 +448,7 @@ export function Studio(props: {
           </div>
         )}
       </div>
-      <StatusBar sync={sync} onSync={() => invoke("sync.now").then((s) => setSync(s as SessionInfo))} onSignOut={() => void goLocal()} />
+      <StatusBar sync={sync} onSignOut={() => void goLocal()} />
       {palette && (
         <CommandPalette
           onClose={() => setPalette(false)}
@@ -437,6 +537,50 @@ export function Studio(props: {
           signedIn={signedIn}
           target={{ kind: share.kind, id: share.id, name: share.name, workspaceId }}
           onClose={() => setShare(null)}
+        />
+      )}
+      {conflict && (
+        <ConflictDialog
+          draft={conflict.draft}
+          latest={conflict.latest}
+          deleted={conflict.deleted}
+          onCancel={() => setConflict(null)}
+          onUseLatest={() => {
+            updateActive(conflict.latest, false);
+            setTabs((prev) =>
+              prev.map((t) => (t.id === conflict.latest.id ? { ...t, request: conflict.latest, dirty: false, remoteUpdated: false, latestRemote: undefined } : t))
+            );
+            setConflict(null);
+          }}
+          onReplaceMine={() => {
+            void persistActive({ overwrite: true, expectedLatest: conflict.latest.version });
+          }}
+          onSaveAsNew={async () => {
+            if (!workspaceId) return;
+            try {
+              const created = await invoke<RequestRecord>("workspace.createRequest", {
+                workspaceId,
+                collectionId: conflict.draft.collectionId,
+                folderId: conflict.draft.folderId,
+                name: `${conflict.draft.name} (copy)`
+              });
+              const saved = await invoke<SaveRequestResult>("workspace.saveRequest", {
+                ...created,
+                document: conflict.draft.document,
+                request: { ...created, document: conflict.draft.document }
+              });
+              setConflict(null);
+              if (saved.status === "saved") {
+                setTabs((prev) => prev.map((t) => (t.id === conflict.draft.id ? { ...t, remoteUpdated: false } : t)));
+                open(saved.request);
+              } else {
+                open(created);
+              }
+              await load(workspaceId);
+            } catch (err) {
+              setActionError(err instanceof Error ? err.message : String(err));
+            }
+          }}
         />
       )}
     </div>

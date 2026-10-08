@@ -410,6 +410,7 @@ export interface SyncOp {
   op: "upsert" | "delete";
   payload: unknown;
   version: number | null;
+  baseVersion?: number | null;
   createdAt: string;
   attempts: number;
   lastError: string | null;

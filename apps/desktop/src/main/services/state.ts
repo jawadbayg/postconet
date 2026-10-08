@@ -13,6 +13,7 @@ export const runtime: {
   syncError: string | null;
   lastHydration: { phase: string; detail?: string } | null;
   abort: Map<string, AbortController>;
+  onLocalMutation: (() => void) | null;
 } = {
   user: null,
   supabase: null,
@@ -22,5 +23,6 @@ export const runtime: {
   sync: "offline",
   syncError: null,
   lastHydration: null,
-  abort: new Map()
+  abort: new Map(),
+  onLocalMutation: null
 };

@@ -58,6 +58,41 @@ describe("sqlite repo", () => {
     closeDatabase(db2);
   });
 
+  it("coalesces pending sync ops for the same request and keeps the original base version", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pc-"));
+    dirs.push(dir);
+    const db = openDatabase(join(dir, "studio.db"));
+    const repo = new StudioRepo(db, "acct");
+    const req = {
+      id: createId("req"),
+      workspaceId: createId("ws"),
+      collectionId: createId("col"),
+      folderId: null,
+      projectId: null,
+      name: "One",
+      protocol: "http" as const,
+      sortOrder: 1,
+      document: emptyHttpDocument(),
+      examples: [],
+      favorite: false,
+      archivedAt: null,
+      deletedAt: null,
+      version: 2,
+      updatedAt: nowIso(),
+      createdAt: nowIso()
+    };
+    repo.upsertRequest(req);
+    req.name = "Two";
+    req.version = 3;
+    repo.upsertRequest(req);
+    const ops = repo.pendingOps();
+    expect(ops).toHaveLength(1);
+    expect(ops[0]?.version).toBe(3);
+    expect(ops[0]?.baseVersion).toBe(1);
+    expect((ops[0]?.payload as { name: string }).name).toBe("Two");
+    closeDatabase(db);
+  });
+
   it("tracks folder descendants and persists collection moves", () => {
     const dir = mkdtempSync(join(tmpdir(), "pc-"));
     dirs.push(dir);

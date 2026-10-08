@@ -60,13 +60,8 @@ export function AuthScreen(props: {
           <BrandMark size={48} className="mb-4" />
           <div className="text-xs uppercase tracking-[0.18em] text-[#667085]">API Studio</div>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[#12151a] dark:text-[#eef0f4]">PostConet</h1>
-          <p className="mt-2 text-sm text-[#667085]">Sign in with email. Project configuration is part of this build, not the login form.</p>
+          <p className="mt-2 text-sm text-[#667085]">Sign in with email.</p>
         </div>
-        {!props.cloudConfigured && (
-          <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
-            Cloud accounts are unavailable until this build is given a Supabase URL and anon key. You can still work locally.
-          </div>
-        )}
         <form onSubmit={submit} className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5 shadow-sm">
           {mode === "signup" && (
             <label className="block text-xs font-medium">

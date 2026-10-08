@@ -119,6 +119,7 @@ export async function createCollection(workspaceId: string, name: string): Promi
     createdAt: nowIso()
   };
   mustRepo().upsertCollection(col);
+  runtime.onLocalMutation?.();
   return col;
 }
 
@@ -140,6 +141,7 @@ export async function createFolder(workspaceId: string, collectionId: string, pa
     createdAt: nowIso()
   };
   mustRepo().upsertFolder(folder);
+  runtime.onLocalMutation?.();
   return folder;
 }
 
@@ -169,6 +171,7 @@ export async function createRequest(opts: {
     createdAt: nowIso()
   };
   mustRepo().upsertRequest(req);
+  runtime.onLocalMutation?.();
   return req;
 }
 
@@ -186,6 +189,7 @@ export async function createEnvironment(workspaceId: string, name: string): Prom
     createdAt: nowIso()
   };
   mustRepo().upsertEnvironment(env);
+  runtime.onLocalMutation?.();
   return env;
 }
 
@@ -201,6 +205,7 @@ export async function renameEntity(type: "collection" | "folder" | "request" | "
     col.updatedAt = nowIso();
     col.version += 1;
     repo.upsertCollection(col);
+    runtime.onLocalMutation?.();
     return col;
   }
   if (type === "folder") {
@@ -211,6 +216,7 @@ export async function renameEntity(type: "collection" | "folder" | "request" | "
     folder.updatedAt = nowIso();
     folder.version += 1;
     repo.upsertFolder(folder);
+    runtime.onLocalMutation?.();
     return folder;
   }
   if (type === "environment") {
@@ -221,6 +227,7 @@ export async function renameEntity(type: "collection" | "folder" | "request" | "
     env.updatedAt = nowIso();
     env.version += 1;
     repo.upsertEnvironment(env);
+    runtime.onLocalMutation?.();
     return env;
   }
   const req = repo.getRequest(id);
@@ -230,6 +237,7 @@ export async function renameEntity(type: "collection" | "folder" | "request" | "
   req.updatedAt = nowIso();
   req.version += 1;
   repo.upsertRequest(req);
+  runtime.onLocalMutation?.();
   return req;
 }
 
@@ -250,6 +258,7 @@ export async function deleteEntity(type: "collection" | "folder" | "request" | "
     repo.upsertCollection(stampDelete(col, stamp));
     for (const folder of repo.listFolders(id)) repo.upsertFolder(stampDelete(folder, stamp));
     for (const req of repo.listRequests(id)) repo.upsertRequest(stampDelete(req, stamp));
+    runtime.onLocalMutation?.();
     return { ok: true };
   }
   if (type === "folder") {
@@ -264,6 +273,7 @@ export async function deleteEntity(type: "collection" | "folder" | "request" | "
     for (const req of repo.listRequests(folder.collectionId)) {
       if (req.folderId && descendantIds.includes(req.folderId)) repo.upsertRequest(stampDelete(req, stamp));
     }
+    runtime.onLocalMutation?.();
     return { ok: true };
   }
   if (type === "environment") {
@@ -271,12 +281,14 @@ export async function deleteEntity(type: "collection" | "folder" | "request" | "
     if (!env) throw new Error("Environment not found");
     await assertCanEditWorkspace(env.workspaceId);
     repo.upsertEnvironment(stampDelete(env, stamp));
+    runtime.onLocalMutation?.();
     return { ok: true };
   }
   const req = repo.getRequest(id);
   if (!req) throw new Error("Request not found");
   await assertCanEditResource("request", id, req.workspaceId);
   repo.upsertRequest(stampDelete(req, stamp));
+  runtime.onLocalMutation?.();
   return { ok: true };
 }
 
@@ -324,6 +336,7 @@ export async function moveFolder(folderId: string, collectionId: string, parentI
       }
     }
   }
+  runtime.onLocalMutation?.();
   return folder;
 }
 
@@ -346,7 +359,62 @@ export async function moveRequest(requestId: string, collectionId: string, folde
   req.updatedAt = nowIso();
   req.version += 1;
   repo.upsertRequest(req);
+  runtime.onLocalMutation?.();
   return req;
+}
+
+export type SaveRequestResult =
+  | { status: "saved"; request: SavedRequest }
+  | { status: "conflict"; draft: SavedRequest; latest: SavedRequest; deleted?: boolean };
+
+export async function saveRequestDocument(
+  incoming: SavedRequest,
+  opts?: { overwrite?: boolean; expectedLatest?: number }
+): Promise<SaveRequestResult> {
+  const repo = mustRepo();
+  const current = repo.getRequest(incoming.id);
+  if (!current || current.deletedAt) {
+    if (current?.deletedAt) {
+      return { status: "conflict", draft: incoming, latest: current, deleted: true };
+    }
+    throw new Error("Request not found");
+  }
+  await assertCanEditResource("request", incoming.id, current.workspaceId);
+  if (opts?.overwrite) {
+    if (opts.expectedLatest != null && current.version !== opts.expectedLatest) {
+      return { status: "conflict", draft: incoming, latest: current };
+    }
+  } else if (current.version !== incoming.version) {
+    return { status: "conflict", draft: incoming, latest: current };
+  }
+  const next: SavedRequest = {
+    ...incoming,
+    collectionId: incoming.collectionId || current.collectionId,
+    folderId: incoming.folderId === undefined ? current.folderId : incoming.folderId,
+    workspaceId: current.workspaceId,
+    version: current.version + 1,
+    updatedAt: nowIso(),
+    createdAt: current.createdAt,
+    deletedAt: null
+  };
+  repo.upsertRequest(next);
+  runtime.onLocalMutation?.();
+  return { status: "saved", request: next };
+}
+
+export async function saveEnvironmentDocument(env: Environment): Promise<Environment> {
+  const repo = mustRepo();
+  const current = repo.getEnvironment(env.id);
+  if (!current || current.deletedAt) throw new Error("Environment not found");
+  await assertCanEditWorkspace(current.workspaceId);
+  if (current.version !== env.version) {
+    throw new Error("Someone updated this environment. Reload it, then save again.");
+  }
+  env.version = current.version + 1;
+  env.updatedAt = nowIso();
+  repo.upsertEnvironment(env);
+  runtime.onLocalMutation?.();
+  return env;
 }
 
 export function tree(workspaceId: string) {

@@ -65,7 +65,7 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
           </button>
         </div>
         {!props.signedIn ? (
-          <p className="mt-4 text-sm text-[var(--muted)]">Sign in to share with another email address. Offline work stays on this Mac.</p>
+          <p className="mt-4 text-sm text-[var(--muted)]">Sign in to share with another email address.</p>
         ) : (
           <>
             <p className="mt-3 text-xs text-[var(--muted)]">Viewer can inspect. Editor can change this item. Private credentials are not shared.</p>

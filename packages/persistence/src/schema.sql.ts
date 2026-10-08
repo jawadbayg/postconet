@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS ops_queue (
   op TEXT NOT NULL,
   payload TEXT NOT NULL,
   version INTEGER,
+  base_version INTEGER,
   created_at TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
@@ -153,6 +154,11 @@ CREATE TABLE IF NOT EXISTS secrets_local (
   workspace_id TEXT,
   kind TEXT NOT NULL,
   ciphertext BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_seen (
+  idempotency_key TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS search_idx (

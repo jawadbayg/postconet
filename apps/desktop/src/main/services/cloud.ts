@@ -4,7 +4,7 @@ import { runtime } from "./state.js";
 import { saveSession, clearSession, loadSession } from "./session.js";
 import { closeAccount, openAccount, mustRepo, ensureWorkspaceIfEmpty } from "./studio.js";
 import { summarizeState, type ChangeLogRow } from "@postconet/core";
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow, net, powerMonitor } from "electron";
 
 export function createAuthedClient(session?: Session) {
   if (!isCloudConfigured()) return null;
@@ -17,6 +17,116 @@ export function createAuthedClient(session?: Session) {
 
 function emit(channel: string, payload: unknown) {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(channel, payload);
+}
+
+function isOnline() {
+  try {
+    return net.isOnline();
+  } catch {
+    return true;
+  }
+}
+
+function refreshStatus() {
+  if (!runtime.user || !isCloudConfigured()) {
+    runtime.sync = "offline";
+    emit("sync.status", statusPayload());
+    return;
+  }
+  if (!isOnline()) {
+    runtime.sync = "offline";
+    runtime.syncError = null;
+    emit("sync.status", statusPayload());
+    return;
+  }
+  const pending = runtime.repo?.pendingOps().length ?? 0;
+  runtime.sync = summarizeState({
+    online: true,
+    pending,
+    conflicts: 0,
+    lastError: runtime.syncError
+  });
+  emit("sync.status", statusPayload());
+}
+
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let flushing = false;
+let flushAgain = false;
+let lastReconcile = 0;
+
+export function schedulePush() {
+  refreshStatus();
+  if (!runtime.user || !isCloudConfigured()) return;
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => void flushSync(), 280);
+}
+
+export async function flushSync() {
+  if (!runtime.user || !runtime.supabase || !isCloudConfigured()) {
+    refreshStatus();
+    return;
+  }
+  if (flushing) {
+    flushAgain = true;
+    return;
+  }
+  flushing = true;
+  try {
+    if (!isOnline()) {
+      runtime.sync = "offline";
+      emit("sync.status", statusPayload());
+      return;
+    }
+    runtime.sync = "syncing";
+    runtime.syncError = null;
+    emit("sync.status", statusPayload());
+    await pullAllWorkspaces();
+    await pushQueue();
+    refreshStatus();
+  } catch (error) {
+    runtime.sync = "failed";
+    runtime.syncError = error instanceof Error ? error.message : String(error);
+    emit("sync.status", statusPayload());
+  } finally {
+    flushing = false;
+    if (flushAgain) {
+      flushAgain = false;
+      schedulePush();
+    }
+  }
+}
+
+export function startSyncRuntime() {
+  runtime.onLocalMutation = () => schedulePush();
+  const tick = () => {
+    if (!runtime.user || !isCloudConfigured()) return;
+    if (!isOnline()) {
+      if (runtime.sync !== "offline") refreshStatus();
+      return;
+    }
+    if (runtime.sync === "offline") void flushSync();
+  };
+  setInterval(tick, 4000);
+  powerMonitor.on("resume", () => {
+    lastReconcile = Date.now();
+    void flushSync();
+  });
+  app.on("browser-window-focus", () => {
+    if (Date.now() - lastReconcile < 2000) return;
+    lastReconcile = Date.now();
+    void flushSync();
+  });
+}
+
+async function pullAllWorkspaces() {
+  if (!runtime.repo) return;
+  for (const ws of runtime.repo.listWorkspaces()) {
+    try {
+      await pullWorkspace(ws.id);
+    } catch (error) {
+      console.error("Pull failed", ws.id, error);
+    }
+  }
 }
 
 export async function restoreSession() {
@@ -140,21 +250,25 @@ export async function hydrateFromCloud() {
     }
     await pullEntity("collections", ws.id, (row) => {
       const incoming = row.payload as { id: string; version: number };
+      if (repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getCollection(incoming.id);
       if (!local || incoming.version > local.version) repo.upsertCollection(row.payload as never, false);
     });
     await pullEntity("folders", ws.id, (row) => {
       const incoming = row.payload as { id: string; version: number };
+      if (repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getFolder(incoming.id);
       if (!local || incoming.version > local.version) repo.upsertFolder(row.payload as never, false);
     });
     await pullEntity("requests", ws.id, (row) => {
       const incoming = row.payload as { id: string; version: number };
+      if (repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getRequest(incoming.id);
       if (!local || incoming.version > local.version) repo.upsertRequest(row.payload as never, false);
     });
     await pullEntity("environments", ws.id, (row) => {
       const incoming = row.payload as { id: string; version: number };
+      if (repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getEnvironment(incoming.id);
       if (!local || incoming.version > local.version) repo.upsertEnvironment(row.payload as never, false);
     });
@@ -178,34 +292,81 @@ async function pullEntity(table: string, workspaceId: string, apply: (row: { pay
   for (const row of data ?? []) apply(row as { payload: unknown });
 }
 
-export async function pushQueue() {
-  if (!runtime.supabase || !runtime.user) return;
+export type PushReject = {
+  idempotencyKey: string;
+  reason: string;
+  currentVersion?: number;
+  current?: unknown;
+  deleted?: boolean;
+};
+
+export async function pushQueue(): Promise<{ rejected: PushReject[] }> {
+  if (!runtime.supabase || !runtime.user) return { rejected: [] };
   const repo = mustRepo();
   const ops = repo.pendingOps();
-  if (ops.length === 0) return;
+  if (ops.length === 0) return { rejected: [] };
+  for (const op of ops) repo.markSending(op.id);
   const { data, error } = await runtime.supabase.functions.invoke("sync-push", { body: { ops } });
   if (error) {
     runtime.sync = "failed";
     runtime.syncError = error.message;
     for (const op of ops) repo.markOp(op.id, "failed", error.message);
     emit("sync.status", statusPayload());
-    return;
+    return { rejected: [] };
   }
   const applied = new Set((data?.applied ?? []).map((a: { idempotencyKey: string }) => a.idempotencyKey));
-  const rejected = (data?.rejected ?? []) as Array<{ idempotencyKey: string; reason: string }>;
+  const rejected = (data?.rejected ?? []) as PushReject[];
   for (const op of ops) {
     if (applied.has(op.idempotencyKey)) {
       repo.ackOp(op.id);
+      repo.rememberIdempotency(op.idempotencyKey);
       continue;
     }
-    const reason = rejected.find((r) => r.idempotencyKey === op.idempotencyKey)?.reason ?? "rejected";
-    if (reason === "conflict" && op.workspaceId) {
-      repo.addConflict(op.workspaceId, op.entityId, { op, reason });
-      repo.markOp(op.id, "conflict", "Remote version is newer. Your local edit was kept and flagged.");
+    const hit = rejected.find((r) => r.idempotencyKey === op.idempotencyKey);
+    const reason = hit?.reason ?? "rejected";
+    if ((reason === "conflict" || reason === "deleted") && op.workspaceId) {
+      revertStaleOp(op, hit);
+      repo.addConflict(op.workspaceId, op.entityId, { op, reason, latest: hit?.current });
+      repo.markOp(op.id, "conflict", reason === "deleted" ? "Remote item was deleted." : "Remote version is newer.");
+    } else if (reason === "already_deleted") {
+      repo.ackOp(op.id);
     } else {
       repo.markOp(op.id, "failed", reason);
     }
   }
+  return { rejected };
+}
+
+function revertStaleOp(op: { entityType: string; entityId: string; payload: unknown }, hit?: PushReject) {
+  const repo = mustRepo();
+  const latest = hit?.current;
+  if (hit?.deleted || hit?.reason === "deleted") {
+    const stamp = new Date().toISOString();
+    if (op.entityType === "request") {
+      const local = repo.getRequest(op.entityId);
+      if (local) repo.upsertRequest({ ...local, deletedAt: stamp, version: hit.currentVersion ?? local.version } as never, false);
+    }
+    if (op.entityType === "folder") {
+      const local = repo.getFolder(op.entityId);
+      if (local) repo.upsertFolder({ ...local, deletedAt: stamp, version: hit.currentVersion ?? local.version } as never, false);
+    }
+    if (op.entityType === "collection") {
+      const local = repo.getCollection(op.entityId);
+      if (local) repo.upsertCollection({ ...local, deletedAt: stamp, version: hit.currentVersion ?? local.version } as never, false);
+    }
+    if (op.entityType === "environment") {
+      const local = repo.getEnvironment(op.entityId);
+      if (local) repo.upsertEnvironment({ ...local, deletedAt: stamp, version: hit.currentVersion ?? local.version } as never, false);
+    }
+    emit("sync.changed", { entityType: op.entityType, entityId: op.entityId, op: "delete", payload: latest ?? null });
+    return;
+  }
+  if (!latest || typeof latest !== "object") return;
+  if (op.entityType === "request") repo.upsertRequest(latest as never, false);
+  if (op.entityType === "collection") repo.upsertCollection(latest as never, false);
+  if (op.entityType === "folder") repo.upsertFolder(latest as never, false);
+  if (op.entityType === "environment") repo.upsertEnvironment(latest as never, false);
+  emit("sync.changed", { entityType: op.entityType, entityId: op.entityId, op: "upsert", payload: latest });
 }
 
 export async function acceptPendingInvites(token?: string) {
@@ -248,19 +409,42 @@ export async function pullWorkspace(workspaceId: string) {
 
 function applyChange(row: ChangeLogRow) {
   const repo = mustRepo();
+  if (row.idempotencyKey && repo.hasIdempotency(row.idempotencyKey)) {
+    if (row.workspaceId && row.seq) repo.setCursor(row.workspaceId, row.seq);
+    return;
+  }
+  if (row.idempotencyKey) repo.rememberIdempotency(row.idempotencyKey);
+  if (repo.hasPendingEntity(row.entityId)) {
+    if (row.workspaceId && row.seq) repo.setCursor(row.workspaceId, row.seq);
+    return;
+  }
   if (!row.payload || typeof row.payload !== "object" || Array.isArray(row.payload) || !("id" in row.payload)) return;
   const incoming = row.payload as { id: string; version?: number };
   const incomingVersion = Number(incoming.version ?? 0);
   const keepLocal = (localVersion: number | undefined) => localVersion != null && localVersion >= incomingVersion;
   if (row.op === "delete") {
+    const stamp = new Date().toISOString();
     if (row.entityType === "request") {
       const local = repo.getRequest(incoming.id);
-      if (keepLocal(local?.version)) {
-        if (row.workspaceId) repo.addConflict(row.workspaceId, incoming.id, { row, reason: "local_newer" });
-        return;
-      }
-      repo.upsertRequest({ ...(incoming as object), deletedAt: new Date().toISOString() } as never, false);
+      if (keepLocal(local?.version)) return;
+      repo.upsertRequest({ ...(incoming as object), deletedAt: stamp } as never, false);
     }
+    if (row.entityType === "folder") {
+      const local = repo.getFolder(incoming.id);
+      if (keepLocal(local?.version)) return;
+      repo.upsertFolder({ ...(incoming as object), deletedAt: stamp } as never, false);
+    }
+    if (row.entityType === "collection") {
+      const local = repo.getCollection(incoming.id);
+      if (keepLocal(local?.version)) return;
+      repo.upsertCollection({ ...(incoming as object), deletedAt: stamp } as never, false);
+    }
+    if (row.entityType === "environment") {
+      const local = repo.getEnvironment(incoming.id);
+      if (keepLocal(local?.version)) return;
+      repo.upsertEnvironment({ ...(incoming as object), deletedAt: stamp } as never, false);
+    }
+    emit("sync.changed", { entityType: row.entityType, entityId: row.entityId, op: "delete", version: incomingVersion, workspaceId: row.workspaceId, payload: incoming });
     return;
   }
   if (row.entityType === "request") {
@@ -291,6 +475,14 @@ function applyChange(row: ChangeLogRow) {
     if (keepLocal(local?.version)) return;
     repo.upsertWorkspace(incoming as never, false);
   }
+  emit("sync.changed", {
+    entityType: row.entityType,
+    entityId: row.entityId,
+    op: row.op,
+    version: incomingVersion,
+    workspaceId: row.workspaceId,
+    payload: incoming
+  });
 }
 
 let subscribed = false;

@@ -8,6 +8,8 @@ export type SessionInfo = {
   user: { id: string; email: string; displayName: string } | null;
   cloudConfigured: boolean;
   state?: string;
+  error?: string | null;
+  pending?: number;
   hydration?: { phase: string; detail?: string } | null;
 };
 
@@ -18,6 +20,12 @@ function withOfflineUser(session: SessionInfo): SessionInfo {
     return { ...session, user: LOCAL_USER };
   }
   return session;
+}
+
+function mergeSyncStatus(prev: SessionInfo, payload: SessionInfo): SessionInfo {
+  const merged: SessionInfo = { ...prev, ...payload };
+  if (!payload.user && prev.user) merged.user = prev.user;
+  return withOfflineUser(merged);
 }
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -81,7 +89,7 @@ export function App() {
     })();
     if (!window.postconet) return;
     return window.postconet.on("sync.status", (payload) => {
-      setSession((prev) => withOfflineUser({ ...(prev ?? { user: null, cloudConfigured: false }), ...(payload as SessionInfo) }));
+      setSession((prev) => mergeSyncStatus(prev ?? { user: null, cloudConfigured: false }, payload as SessionInfo));
     });
   }, []);
 

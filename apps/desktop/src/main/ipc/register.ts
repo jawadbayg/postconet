@@ -10,10 +10,10 @@ import {
   cookieHeaderFor,
   storeSetCookies,
   listCookies,
-  nowIso,
   type AuthConfig,
   type HttpRequestDocument,
   type SavedRequest,
+  type Environment,
   mcpInitializeHttp,
   mcpStartStdio
 } from "@postconet/core";
@@ -28,7 +28,9 @@ import {
   renameEntity,
   deleteEntity,
   moveFolder,
-  moveRequest
+  moveRequest,
+  saveRequestDocument,
+  saveEnvironmentDocument
 } from "../services/studio.js";
 import {
   signIn,
@@ -39,6 +41,7 @@ import {
   publicUser,
   statusPayload,
   pushQueue,
+  flushSync,
   hydrateFromCloud,
   acceptPendingInvites,
   listNotifications,
@@ -130,21 +133,37 @@ export function registerIpc() {
     })
   );
   ipcMain.handle("workspace.saveRequest", (_e, raw) =>
-    handle(() => {
-      const req = raw as SavedRequest;
-      req.updatedAt = nowIso();
-      req.version = (req.version ?? 0) + 1;
-      mustRepo().upsertRequest(req);
-      return req;
+    handle(async () => {
+      const body = (raw ?? {}) as SavedRequest & {
+        request?: SavedRequest;
+        overwrite?: boolean;
+        expectedLatest?: number;
+      };
+      const incoming = (body.request ?? body) as SavedRequest;
+      const result = await saveRequestDocument(incoming, {
+        overwrite: body.overwrite,
+        expectedLatest: body.expectedLatest
+      });
+      if (result.status === "conflict") return result;
+      if (runtime.user && runtime.supabase) {
+        await pushQueue();
+        const latest = mustRepo().getRequest(incoming.id);
+        if (!latest || latest.deletedAt) {
+          return { status: "conflict" as const, draft: incoming, latest: latest ?? result.request, deleted: true };
+        }
+        if (latest.version !== result.request.version) {
+          return { status: "conflict" as const, draft: incoming, latest };
+        }
+      }
+      return result;
     })
   );
   ipcMain.handle("workspace.saveEnvironment", (_e, raw) =>
-    handle(() => {
-      const env = raw as { version?: number; updatedAt?: string };
-      env.updatedAt = nowIso();
-      env.version = (env.version ?? 0) + 1;
-      mustRepo().upsertEnvironment(env as never);
-      return env;
+    handle(async () => {
+      const env = raw as Environment;
+      const saved = await saveEnvironmentDocument(env);
+      if (runtime.user && runtime.supabase) await pushQueue();
+      return saved;
     })
   );
   ipcMain.handle("workspace.rename", (_e, raw) =>
@@ -347,6 +366,7 @@ export function registerIpc() {
           repo.setGlobals(preview.collections[0].workspaceId, preview.globals);
         }
       });
+      runtime.onLocalMutation?.();
       return { imported: true, issues: preview.issues, missingFiles: preview.missingFiles };
     })
   );
@@ -410,8 +430,7 @@ export function registerIpc() {
   ipcMain.handle("sync.status", () => ok(statusPayload()));
   ipcMain.handle("sync.now", () =>
     handle(async () => {
-      await pushQueue();
-      await hydrateFromCloud();
+      await flushSync();
       return statusPayload();
     })
   );

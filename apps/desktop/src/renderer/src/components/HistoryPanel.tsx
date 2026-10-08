@@ -29,7 +29,7 @@ export function HistoryPanel(props: {
     <div className="flex h-full flex-col bg-[var(--canvas)]">
       <div className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-3">
         <div className="text-sm font-medium">History</div>
-        <p className="mt-1 text-xs text-[var(--muted)]">Past executions on this Mac. Open an item to reload that request snapshot. History is local and is not shared.</p>
+        <p className="mt-1 text-xs text-[var(--muted)]">Open an item to reload that request.</p>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {items.length === 0 && <div className="p-6 text-sm text-[var(--muted)]">No requests have been sent yet.</div>}

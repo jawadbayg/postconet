@@ -52,7 +52,6 @@ export function SettingsScreen(props: {
       <div className="mx-auto max-w-xl space-y-6">
         <div>
           <h1 className="text-lg font-semibold">Settings</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">This Mac’s preferences. Database host and keys are part of the app build, not a user setting.</p>
         </div>
 
         <section className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4">
@@ -67,7 +66,7 @@ export function SettingsScreen(props: {
             </div>
           ) : (
             <div className="mt-3 space-y-2 text-sm">
-              <p className="text-[var(--muted)]">You’re in offline mode. Local collections stay on this Mac.</p>
+              <p className="text-[var(--muted)]">You’re in offline mode.</p>
               <div className="flex gap-2">
                 <button className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs text-white" onClick={() => setAuthMode("signin")}>
                   Log in
@@ -117,10 +116,10 @@ export function SettingsScreen(props: {
         </section>
 
         <section className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 space-y-3">
-          <h2 className="text-sm font-medium">Local storage and history</h2>
+          <h2 className="text-sm font-medium">History</h2>
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={settings.historyEnabled} onChange={(e) => void save({ ...settings, historyEnabled: e.target.checked })} />
-            Save request history on this Mac
+            Save request history
           </label>
           <button
             className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs"
@@ -135,14 +134,14 @@ export function SettingsScreen(props: {
 
         <section className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 space-y-2 text-sm">
           <h2 className="text-sm font-medium">Synchronization</h2>
-          <div className="text-xs text-[var(--muted)]">Status: {props.session.state ?? (props.session.cloudConfigured ? "idle" : "local-only")}</div>
+          <div className="text-xs text-[var(--muted)]">
+            Status: {props.session.state ?? (props.session.cloudConfigured ? "idle" : "offline")}
+            {typeof props.session.pending === "number" ? ` · ${props.session.pending} queued` : ""}
+          </div>
           {props.session.hydration?.phase && <div className="text-xs text-[var(--muted)]">{props.session.hydration.phase}</div>}
-          <button className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs" onClick={() => invoke("sync.now")}>
-            Sync now
-          </button>
           {conflicts.length > 0 && (
             <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
-              {conflicts.length} concurrent edit(s) were kept locally instead of being overwritten. Sync again after reviewing.
+              {conflicts.length} concurrent edit(s) need a choice in the open request (Use latest, Replace with mine, or Save as new).
             </div>
           )}
         </section>

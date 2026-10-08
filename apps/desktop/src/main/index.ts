@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import { CSP, DEV_CSP } from "./security/csp.js";
 import { registerIpc } from "./ipc/register.js";
-import { acceptPendingInvites, restoreSession } from "./services/cloud.js";
+import { acceptPendingInvites, restoreSession, startSyncRuntime } from "./services/cloud.js";
 import { appBrand } from "./config.js";
 import { openAccount } from "./services/studio.js";
 
@@ -195,6 +195,7 @@ app.whenReady().then(async () => {
   }
   installCsp();
   registerIpc();
+  startSyncRuntime();
   buildMenu();
   try {
     await restoreSession();

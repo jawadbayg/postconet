@@ -5,10 +5,49 @@ export interface SyncCursor {
   lastSeq: number;
 }
 
+export type PushDecision = "apply" | "conflict" | "deleted" | "already_deleted";
+export type TabRemoteDecision = "replace" | "keep_draft";
+export type SyncStatusLabel = "Syncing" | "Synced" | "Offline" | "Sync failed";
+
 export function nextBackoffMs(attempts: number): number {
   const base = Math.min(60_000, 500 * 2 ** Math.min(8, attempts));
   const jitter = Math.floor(Math.random() * 250);
   return base + jitter;
+}
+
+export function expectedBaseVersion(newVersion: number): number {
+  return Math.max(0, newVersion - 1);
+}
+
+/** Server-side decision: never last-write-wins, never undelete from a stale upsert. */
+export function evaluatePush(
+  current: { version: number; deletedAt?: string | null } | null,
+  op: { op: "upsert" | "delete"; version: number; baseVersion?: number | null }
+): PushDecision {
+  const base = op.baseVersion ?? expectedBaseVersion(op.version);
+  if (!current) {
+    if (op.op === "delete") return "already_deleted";
+    if (base <= 0) return "apply";
+    return "conflict";
+  }
+  if (current.deletedAt) {
+    if (op.op === "delete") return "already_deleted";
+    return "deleted";
+  }
+  if (Number(current.version) !== Number(base)) return "conflict";
+  return "apply";
+}
+
+export function tabOnRemoteUpdate(tab: { dirty: boolean }): TabRemoteDecision {
+  return tab.dirty ? "keep_draft" : "replace";
+}
+
+export function syncStatusLabel(state: SyncState | string | undefined, cloudConfigured: boolean): SyncStatusLabel {
+  if (!cloudConfigured) return "Offline";
+  if (state === "offline") return "Offline";
+  if (state === "failed") return "Sync failed";
+  if (state === "syncing") return "Syncing";
+  return "Synced";
 }
 
 export function applyRemoteChanges(
@@ -27,12 +66,8 @@ export function applyRemoteChanges(
     }
     seenIdempotency.add(row.idempotencyKey);
     const current = localVersions.get(row.entityId) ?? 0;
-    if (row.version < current) {
+    if (row.version <= current) {
       skip.push(row);
-      continue;
-    }
-    if (row.version === current && current !== 0) {
-      conflicts.push(row);
       continue;
     }
     apply.push(row);
@@ -52,14 +87,29 @@ export function refuseEmptyOverwrite(localEntityCount: number, cloudEntityCount:
 
 export function summarizeState(opts: { online: boolean; pending: number; conflicts: number; lastError: string | null }): SyncState {
   if (!opts.online) return "offline";
-  if (opts.conflicts > 0) return "conflicted";
   if (opts.lastError) return "failed";
   if (opts.pending > 0) return "syncing";
+  if (opts.conflicts > 0) return "conflicted";
   return "synchronized";
 }
 
 export function mergeQueue(existing: SyncOp[], incoming: SyncOp): SyncOp[] {
   const idx = existing.findIndex((op) => op.idempotencyKey === incoming.idempotencyKey);
   if (idx >= 0) return existing;
+  const sameEntity = existing.findIndex(
+    (op) => op.entityId === incoming.entityId && (op.status === "pending" || op.status === "failed")
+  );
+  if (sameEntity >= 0) {
+    const prev = existing[sameEntity]!;
+    const next = [...existing];
+    next[sameEntity] = {
+      ...prev,
+      payload: incoming.payload,
+      version: incoming.version,
+      op: incoming.op,
+      createdAt: incoming.createdAt
+    };
+    return next;
+  }
   return [...existing, incoming];
 }

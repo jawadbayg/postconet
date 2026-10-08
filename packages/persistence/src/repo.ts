@@ -20,22 +20,38 @@ export class StudioRepo {
   ) {}
 
   private enqueue(entityType: EntityType, entityId: string, workspaceId: string | null, op: "upsert" | "delete", payload: unknown, version: number) {
+    const baseVersion = Math.max(0, version - 1);
+    const pending = this.db
+      .prepare("SELECT id, base_version as baseVersion FROM ops_queue WHERE entity_id = ? AND status IN ('pending','failed') LIMIT 1")
+      .get(entityId) as { id: string; baseVersion: number | null } | undefined;
+    if (pending) {
+      this.db
+        .prepare("UPDATE ops_queue SET op = ?, payload = ?, version = ?, status = 'pending', last_error = NULL WHERE id = ?")
+        .run(op, JSON.stringify(payload), version, pending.id);
+      return;
+    }
+    const sending = this.db
+      .prepare("SELECT version FROM ops_queue WHERE entity_id = ? AND status = 'sending' ORDER BY created_at DESC LIMIT 1")
+      .get(entityId) as { version: number | null } | undefined;
+    const key = createIdempotencyKey();
     this.db
       .prepare(
-        `INSERT INTO ops_queue (id, idempotency_key, entity_type, entity_id, workspace_id, op, payload, version, created_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
+        `INSERT INTO ops_queue (id, idempotency_key, entity_type, entity_id, workspace_id, op, payload, version, base_version, created_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
       )
       .run(
         createId("op"),
-        createIdempotencyKey(),
+        key,
         entityType,
         entityId,
         workspaceId,
         op,
         JSON.stringify(payload),
         version,
+        sending?.version ?? baseVersion,
         nowIso()
       );
+    this.rememberIdempotency(key);
   }
 
   private reindex(entityId: string, entityType: string, title: string, body: string) {
@@ -324,6 +340,7 @@ export class StudioRepo {
           op: r.op as "upsert" | "delete",
           payload: JSON.parse(String(r.payload)),
           version: (r.version as number) ?? null,
+          baseVersion: (r.base_version as number | null) ?? null,
           createdAt: String(r.created_at),
           attempts: Number(r.attempts),
           lastError: (r.last_error as string) ?? null,
@@ -338,6 +355,37 @@ export class StudioRepo {
 
   ackOp(id: string) {
     this.db.prepare("UPDATE ops_queue SET status = 'acked' WHERE id = ?").run(id);
+  }
+
+  markSending(id: string) {
+    this.db.prepare("UPDATE ops_queue SET status = 'sending' WHERE id = ? AND status IN ('pending','failed')").run(id);
+  }
+
+  hasPendingEntity(entityId: string): boolean {
+    const row = this.db
+      .prepare("SELECT id FROM ops_queue WHERE entity_id = ? AND status IN ('pending','failed','sending') LIMIT 1")
+      .get(entityId);
+    return Boolean(row);
+  }
+
+  rememberIdempotency(key: string) {
+    this.db.prepare("INSERT OR IGNORE INTO sync_seen (idempotency_key, created_at) VALUES (?, ?)").run(key, nowIso());
+  }
+
+  hasIdempotency(key: string): boolean {
+    if (!key) return false;
+    const row = this.db.prepare("SELECT idempotency_key FROM sync_seen WHERE idempotency_key = ?").get(key);
+    return Boolean(row);
+  }
+
+  resolveConflict(id: string) {
+    this.db.prepare("UPDATE conflicts SET resolved_at = ? WHERE id = ?").run(nowIso(), id);
+  }
+
+  resolveConflictsForEntity(workspaceId: string, entityId: string) {
+    this.db
+      .prepare("UPDATE conflicts SET resolved_at = ? WHERE workspace_id = ? AND entity_id = ? AND resolved_at IS NULL")
+      .run(nowIso(), workspaceId, entityId);
   }
 
   getCursor(workspaceId: string): number {

@@ -21,6 +21,8 @@ export function RequestWorkbench(props: {
   onPin: (id: string) => void;
   onChange: (req: RequestRecord) => void;
   onSave: () => void;
+  remoteUpdated?: boolean;
+  onReviewRemote?: () => void;
   workspaceId: string | null;
   environmentId: string | null;
   environments: Array<{ id: string; name: string }>;
@@ -213,6 +215,14 @@ export function RequestWorkbench(props: {
   return (
     <div className="flex h-full flex-col bg-[var(--canvas)]">
       {tabBar}
+      {props.remoteUpdated && tab && (
+        <div className="flex items-center justify-between gap-3 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-900 dark:text-amber-100">
+          <span>Someone updated this API while you were editing. Your draft is still here.</span>
+          <button type="button" className="rounded-md border border-amber-700/40 px-2 py-1" onClick={props.onReviewRemote}>
+            Review versions
+          </button>
+        </div>
+      )}
       <div className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--panel)] px-3 py-2">
         <select
           className="rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs"

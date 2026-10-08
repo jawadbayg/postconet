@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import "../monaco";
+import { POSTCONET_THEME_DARK, POSTCONET_THEME_LIGHT } from "../monaco";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 
@@ -43,11 +43,11 @@ export default function MonacoPane(props: MonacoPaneProps) {
   };
 
   return (
-    <div className="h-full min-h-[160px] w-full overflow-hidden" style={{ height: props.height ?? "100%" }}>
+    <div className="h-full min-h-[160px] w-full overflow-hidden bg-[var(--canvas)]" style={{ height: props.height ?? "100%" }}>
       <Editor
         height="100%"
         language={props.language ?? "plaintext"}
-        theme={dark ? "vs-dark" : "vs"}
+        theme={dark ? POSTCONET_THEME_DARK : POSTCONET_THEME_LIGHT}
         value={props.value}
         onMount={onMount}
         onChange={(value) => props.onChange?.(value ?? "")}
