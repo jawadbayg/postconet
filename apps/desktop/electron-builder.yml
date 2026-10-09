@@ -15,6 +15,7 @@ extraResources:
     to: icon.png
 mac:
   icon: icon.icns
+  artifactName: PostConet-API-Studio-${version}-${arch}.${ext}
   category: public.app-category.developer-tools
   target:
     - target: dmg
@@ -28,7 +29,7 @@ mac:
   notarize: false
 win:
   icon: icon.png
-  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+  artifactName: PostConet-API-Studio-Setup-${version}-${arch}.${ext}
   target:
     - target: nsis
       arch: [x64]

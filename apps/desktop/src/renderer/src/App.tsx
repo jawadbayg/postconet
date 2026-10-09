@@ -55,10 +55,19 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+/** The startup loader stays on screen at least this long, even when the session answers instantly. */
+const MIN_SPLASH_MS = 2000;
+
 export function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [error, setError] = useState<string | null>(null);
+  const [splashDone, setSplashDone] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSplashDone(true), MIN_SPLASH_MS);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -98,7 +107,7 @@ export function App() {
     });
   }, []);
 
-  if (!session) {
+  if (!session || !splashDone) {
     return (
       <div className="flex min-h-screen flex-1 flex-col bg-[#f4f5f7] dark:bg-[#0f1115]">
         <DispatchLoaderFill size={180} />

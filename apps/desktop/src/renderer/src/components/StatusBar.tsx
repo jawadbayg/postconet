@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { isCloudUser, type SessionInfo } from "../App";
+import { invoke } from "../lib/ipc";
 
 function syncStatusLabel(state: string | undefined, signedInCloud: boolean) {
   if (!signedInCloud) return "Offline";
@@ -9,6 +11,12 @@ function syncStatusLabel(state: string | undefined, signedInCloud: boolean) {
 }
 
 export function StatusBar(props: { sync: SessionInfo }) {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    void invoke<{ version: string }>("app.version")
+      .then((v) => setVersion(v.version))
+      .catch(() => undefined);
+  }, []);
   const signedIn = isCloudUser(props.sync.user);
   const hydrating = props.sync.hydration?.phase && props.sync.hydration.phase !== "Ready";
   const label = hydrating
@@ -23,6 +31,7 @@ export function StatusBar(props: { sync: SessionInfo }) {
         <span className={tone}>{label}</span>
         {props.sync.error && label === "Sync failed" && <span className="max-w-xs truncate">{props.sync.error}</span>}
       </div>
+      {version && <span className="ml-auto">v{version}</span>}
     </footer>
   );
 }
