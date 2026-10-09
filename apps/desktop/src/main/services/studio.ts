@@ -5,6 +5,7 @@ import {
   emptyAuth,
   emptyScripts,
   emptyHttpDocument,
+  sameEntityContent,
   type HttpRequestDocument,
   type Collection,
   type Folder,
@@ -539,6 +540,8 @@ export async function saveRequestDocument(
       return { status: "conflict", draft: incoming, latest: current };
     }
   } else if (current.version !== incoming.version) {
+    // A version drift with identical content is not a real conflict — nothing to choose between.
+    if (sameEntityContent(incoming, current)) return { status: "saved", request: current };
     return { status: "conflict", draft: incoming, latest: current };
   }
   const next: SavedRequest = {

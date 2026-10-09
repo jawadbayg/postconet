@@ -22,7 +22,7 @@ export class StudioRepo {
   private enqueue(entityType: EntityType, entityId: string, workspaceId: string | null, op: "upsert" | "delete", payload: unknown, version: number) {
     const baseVersion = Math.max(0, version - 1);
     const pending = this.db
-      .prepare("SELECT id, base_version as baseVersion FROM ops_queue WHERE entity_id = ? AND status IN ('pending','failed') LIMIT 1")
+      .prepare("SELECT id, base_version as baseVersion FROM ops_queue WHERE entity_id = ? AND status IN ('pending','failed') ORDER BY created_at DESC LIMIT 1")
       .get(entityId) as { id: string; baseVersion: number | null } | undefined;
     if (pending) {
       this.db
@@ -355,13 +355,52 @@ export class StudioRepo {
 
   ackOp(id: string) {
     this.db.prepare("UPDATE ops_queue SET status = 'acked' WHERE id = ?").run(id);
+    // Older queued edits for the same item are now behind the server; never replay them.
+    this.db
+      .prepare(
+        `UPDATE ops_queue SET status = 'rejected', last_error = 'superseded'
+         WHERE entity_id = (SELECT entity_id FROM ops_queue WHERE id = ?)
+           AND id != ?
+           AND status IN ('pending','failed','sending','conflict')
+           AND version <= (SELECT version FROM ops_queue WHERE id = ?)`
+      )
+      .run(id, id, id);
+  }
+
+  /** A rejected op is terminal: local state was reset to the server copy, so the next save starts a fresh op. */
+  rejectOp(id: string, error: string) {
+    this.db.prepare("UPDATE ops_queue SET status = 'rejected', last_error = ?, attempts = attempts + 1 WHERE id = ?").run(error, id);
   }
 
   markSending(id: string) {
     this.db.prepare("UPDATE ops_queue SET status = 'sending' WHERE id = ? AND status IN ('pending','failed')").run(id);
   }
 
+  recoverSendingOps() {
+    this.db.prepare("UPDATE ops_queue SET status = 'pending' WHERE status = 'sending'").run();
+  }
+
+  requeueRetryableOps() {
+    // Legacy 'conflict' rows were already reverted to the server copy; retrying them only loops.
+    this.db.prepare("UPDATE ops_queue SET status = 'rejected' WHERE status = 'conflict'").run();
+    this.db.prepare("UPDATE ops_queue SET status = 'pending', last_error = NULL WHERE status = 'failed'").run();
+  }
+
+  firstFailedError(): string | null {
+    const row = this.db
+      .prepare("SELECT last_error FROM ops_queue WHERE status = 'failed' AND last_error IS NOT NULL ORDER BY created_at LIMIT 1")
+      .get() as { last_error: string } | undefined;
+    return row?.last_error ?? null;
+  }
+
+  unresolvedConflictEntities(): Array<{ workspaceId: string; entityId: string }> {
+    return this.db
+      .prepare("SELECT DISTINCT workspace_id as workspaceId, entity_id as entityId FROM conflicts WHERE resolved_at IS NULL")
+      .all() as Array<{ workspaceId: string; entityId: string }>;
+  }
+
   hasPendingEntity(entityId: string): boolean {
+    if (!entityId) return false;
     const row = this.db
       .prepare("SELECT id FROM ops_queue WHERE entity_id = ? AND status IN ('pending','failed','sending') LIMIT 1")
       .get(entityId);

@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { invoke } from "../lib/ipc";
 import type { SessionInfo } from "../App";
-import authBackground from "../../../../../../resources/icons/postconet-auth-background.svg?url";
+import authBackgroundDark from "../../../../../../resources/icons/postconet-auth-background.svg?url";
+import authBackgroundLight from "../../../../../../resources/icons/postconet-auth-background-light.svg?url";
 import { BrandMark } from "../components/BrandMark";
 import { DispatchLoaderOverlay } from "../components/DispatchLoader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -108,6 +109,12 @@ export function AuthScreen(props: {
   const passwordOk = passwordIsValid(password);
   const confirmOk = confirmPassword.length > 0 && confirmPassword === password;
   const confirmMismatch = confirmPassword.length > 0 && confirmPassword !== password;
+  const shownError =
+    mode === "signup" && passwordOk && error === "Use at least 6 characters, including a letter and a number."
+      ? null
+      : mode === "signup" && confirmOk && error === "Passwords do not match."
+        ? null
+        : error;
 
   function switchMode() {
     setMode(mode === "signup" ? "signin" : "signup");
@@ -118,16 +125,18 @@ export function AuthScreen(props: {
     setMessage(null);
   }
 
+  const dark = props.theme === "dark";
+
   return (
     <div className="flex h-full min-h-0 w-full flex-1 overflow-hidden bg-[#f4f5f7] text-[#12151a] dark:bg-[#0f1115] dark:text-[#eef0f4]">
       <div className="grid h-full min-h-0 w-full grid-cols-2 overflow-hidden">
         <div className="relative flex h-full flex-col items-center justify-center overflow-hidden border-r border-[var(--border)] px-10 text-center">
-          <img src={authBackground} alt="" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
+          <img src={dark ? authBackgroundDark : authBackgroundLight} alt="" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
           <div className="relative flex flex-col items-center">
             <BrandMark size={64} className="mb-5" />
-            <div className="text-xs uppercase tracking-[0.18em] text-[#c5cedd]">API Studio</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">PostConet</h1>
-            <p className="mt-3 max-w-xs text-sm text-[#c5cedd]">
+            <div className={`text-xs uppercase tracking-[0.18em] ${dark ? "text-[#c5cedd]" : "text-[#667085]"}`}>API Studio</div>
+            <h1 className={`mt-2 text-3xl font-semibold tracking-tight ${dark ? "text-white" : "text-[#12151a]"}`}>PostConet</h1>
+            <p className={`mt-3 max-w-xs text-sm ${dark ? "text-[#c5cedd]" : "text-[#667085]"}`}>
               {mode === "signup" ? "Create an in-app account and sign in." : "Sign in to your in-app account."}
             </p>
           </div>
@@ -203,7 +212,7 @@ export function AuthScreen(props: {
               {confirmMismatch && <p className="mt-1 text-[11px] text-red-600">Passwords do not match.</p>}
             </div>
           )}
-          {error && <div className="text-sm text-red-600">{error}</div>}
+          {shownError && <div className="text-sm text-red-600">{shownError}</div>}
           {message && <div className="text-sm text-emerald-600">{message}</div>}
           <button disabled={busy || !props.cloudConfigured || (mode === "signup" && (!passwordOk || !confirmOk))} className="w-full rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
             {mode === "signup" ? "Create account" : "Sign in"}

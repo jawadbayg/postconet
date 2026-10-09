@@ -16,7 +16,7 @@ import {
   type LocalSnapshot,
   type LocalDataSummary
 } from "./studio.js";
-import { summarizeState, type ChangeLogRow } from "@postconet/core";
+import { sameEntityContent, summarizeState, type ChangeLogRow } from "@postconet/core";
 import { app, BrowserWindow, net, powerMonitor } from "electron";
 
 export function createAuthedClient(session?: Session) {
@@ -57,7 +57,7 @@ function refreshStatus() {
     online: true,
     pending,
     conflicts: 0,
-    lastError: runtime.syncError
+    lastError: runtime.syncError ?? runtime.repo?.firstFailedError() ?? null
   });
   emit("sync.status", statusPayload());
 }
@@ -66,6 +66,7 @@ let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushing = false;
 let flushAgain = false;
 let lastReconcile = 0;
+let queueReconciled = false;
 
 export function schedulePush() {
   refreshStatus();
@@ -93,6 +94,7 @@ export async function flushSync() {
     runtime.sync = "syncing";
     runtime.syncError = null;
     emit("sync.status", statusPayload());
+    await reconcileUnsyncedOnce();
     await pullAllWorkspaces();
     await pushQueue();
     refreshStatus();
@@ -198,7 +200,7 @@ export async function signUp(email: string, password: string, displayName: strin
     throw new Error("That email already has an account. Sign in instead.");
   }
   if (code === "password_invalid" || code === "password_too_short") {
-    throw new Error("Use at least 6 characters, including a letter and a number.");
+    throw new Error("Could not create the account. Use at least 6 characters, with a letter and a number.");
   }
   if (!res.ok || !payload?.user) {
     throw new Error(code || `Could not create the account (${res.status}). Deploy the register function with Verify JWT off.`);
@@ -284,6 +286,7 @@ export async function signOut() {
   subscribed = false;
   pendingLocalSnapshot = null;
   pendingUser = null;
+  queueReconciled = false;
   await runtime.supabase?.auth.signOut();
   clearSession();
   runtime.user = null;
@@ -322,6 +325,8 @@ export async function hydrateFromCloud() {
     return;
   }
   const repo = mustRepo();
+  repo.recoverSendingOps();
+  repo.requeueRetryableOps();
   for (const ws of workspaces ?? []) {
     runtime.lastHydration = { phase: "Downloading collections", detail: ws.name };
     emit("sync.progress", runtime.lastHydration);
@@ -344,48 +349,150 @@ export async function hydrateFromCloud() {
     if (!localWs || Number(ws.version) > localWs.version) {
       repo.upsertWorkspace(incomingWs as never, false);
     }
-    await pullEntity("collections", ws.id, (row) => {
-      const incoming = row.payload as { id: string; version: number };
-      if (repo.hasPendingEntity(incoming.id)) return;
+    const cloudCollections = await pullEntity("collections", ws.id, (row) => {
+      const incoming = row.payload as { id?: string; version?: number } | null;
+      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getCollection(incoming.id);
-      if (!local || incoming.version > local.version) repo.upsertCollection(row.payload as never, false);
+      if (!local || Number(incoming.version) > local.version) repo.upsertCollection(row.payload as never, false);
     });
-    await pullEntity("folders", ws.id, (row) => {
-      const incoming = row.payload as { id: string; version: number };
-      if (repo.hasPendingEntity(incoming.id)) return;
+    const cloudFolders = await pullEntity("folders", ws.id, (row) => {
+      const incoming = row.payload as { id?: string; version?: number } | null;
+      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getFolder(incoming.id);
-      if (!local || incoming.version > local.version) repo.upsertFolder(row.payload as never, false);
+      if (!local || Number(incoming.version) > local.version) repo.upsertFolder(row.payload as never, false);
     });
-    await pullEntity("requests", ws.id, (row) => {
-      const incoming = row.payload as { id: string; version: number };
-      if (repo.hasPendingEntity(incoming.id)) return;
+    const cloudRequests = await pullEntity("requests", ws.id, (row) => {
+      const incoming = row.payload as { id?: string; version?: number } | null;
+      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getRequest(incoming.id);
-      if (!local || incoming.version > local.version) repo.upsertRequest(row.payload as never, false);
+      if (!local || Number(incoming.version) > local.version) repo.upsertRequest(row.payload as never, false);
     });
-    await pullEntity("environments", ws.id, (row) => {
-      const incoming = row.payload as { id: string; version: number };
-      if (repo.hasPendingEntity(incoming.id)) return;
+    const cloudEnvs = await pullEntity("environments", ws.id, (row) => {
+      const incoming = row.payload as { id?: string; version?: number } | null;
+      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getEnvironment(incoming.id);
-      if (!local || incoming.version > local.version) repo.upsertEnvironment(row.payload as never, false);
+      if (!local || Number(incoming.version) > local.version) repo.upsertEnvironment(row.payload as never, false);
     });
+    enqueueMissingCloudEntities(ws.id, cloudCollections, cloudFolders, cloudRequests, cloudEnvs);
     const cursor = await runtime.supabase.from("change_log").select("seq").eq("workspace_id", ws.id).order("seq", { ascending: false }).limit(1);
     repo.setCursor(ws.id, cursor.data?.[0]?.seq ?? 0);
   }
+  await reconcileUnsyncedOnce();
   await pushQueue();
   runtime.sync = summarizeState({
     online: true,
     pending: repo.pendingOps().length,
     conflicts: 0,
-    lastError: null
+    lastError: repo.firstFailedError()
   });
   runtime.lastHydration = { phase: "Ready" };
   emit("sync.progress", runtime.lastHydration);
   emit("sync.status", statusPayload());
 }
 
-async function pullEntity(table: string, workspaceId: string, apply: (row: { payload: unknown }) => void) {
-  const { data } = await runtime.supabase!.from(table).select("payload").eq("workspace_id", workspaceId);
-  for (const row of data ?? []) apply(row as { payload: unknown });
+async function pullEntity(table: string, workspaceId: string, apply: (row: { payload: unknown }) => void): Promise<Set<string>> {
+  const { data } = await runtime.supabase!.from(table).select("id, payload").eq("workspace_id", workspaceId);
+  const ids = new Set<string>();
+  for (const row of data ?? []) {
+    const record = row as { id?: string; payload: unknown };
+    if (record.id) ids.add(record.id);
+    const payload = record.payload as { id?: string } | null;
+    if (payload?.id) ids.add(payload.id);
+    apply(record);
+  }
+  return ids;
+}
+
+function parentFirstFolders<T extends { id: string; parentId: string | null }>(folders: T[]): T[] {
+  const remaining = [...folders];
+  const out: T[] = [];
+  const placed = new Set<string>();
+  while (remaining.length) {
+    const ready = remaining.filter((folder) => !folder.parentId || placed.has(folder.parentId) || !folders.some((row) => row.id === folder.parentId));
+    if (!ready.length) {
+      out.push(...remaining);
+      break;
+    }
+    for (const folder of ready) {
+      placed.add(folder.id);
+      out.push(folder);
+    }
+    remaining.splice(0, remaining.length, ...remaining.filter((folder) => !placed.has(folder.id)));
+  }
+  return out;
+}
+
+async function versionsInCloud(table: string, workspaceId: string): Promise<Map<string, number>> {
+  if (!runtime.supabase) return new Map();
+  const { data } = await runtime.supabase.from(table).select("id, version").eq("workspace_id", workspaceId);
+  const out = new Map<string, number>();
+  for (const row of data ?? []) {
+    const r = row as { id: string; version: number | string };
+    out.set(String(r.id), Number(r.version));
+  }
+  return out;
+}
+
+async function reconcileUnsyncedOnce() {
+  if (queueReconciled || !runtime.supabase || !runtime.repo || !runtime.user) return;
+  const repo = runtime.repo;
+  repo.recoverSendingOps();
+  repo.requeueRetryableOps();
+  for (const ws of repo.listWorkspaces()) {
+    const [cloudCollections, cloudFolders, cloudRequests, cloudEnvs] = await Promise.all([
+      versionsInCloud("collections", ws.id),
+      versionsInCloud("folders", ws.id),
+      versionsInCloud("requests", ws.id),
+      versionsInCloud("environments", ws.id)
+    ]);
+    enqueueMissingCloudEntities(
+      ws.id,
+      new Set(cloudCollections.keys()),
+      new Set(cloudFolders.keys()),
+      new Set(cloudRequests.keys()),
+      new Set(cloudEnvs.keys())
+    );
+    // Old conflict notices are stale once the local copy matches the server copy.
+    for (const conflict of repo.unresolvedConflictEntities()) {
+      if (conflict.workspaceId !== ws.id || repo.hasPendingEntity(conflict.entityId)) continue;
+      const localVersion =
+        repo.getRequest(conflict.entityId)?.version ??
+        repo.getFolder(conflict.entityId)?.version ??
+        repo.getCollection(conflict.entityId)?.version ??
+        repo.getEnvironment(conflict.entityId)?.version;
+      const cloudVersion =
+        cloudRequests.get(conflict.entityId) ??
+        cloudFolders.get(conflict.entityId) ??
+        cloudCollections.get(conflict.entityId) ??
+        cloudEnvs.get(conflict.entityId);
+      if (localVersion == null || cloudVersion == null || localVersion === cloudVersion) {
+        repo.resolveConflictsForEntity(ws.id, conflict.entityId);
+      }
+    }
+  }
+  queueReconciled = true;
+}
+
+function enqueueMissingCloudEntities(
+  workspaceId: string,
+  cloudCollections: Set<string>,
+  cloudFolders: Set<string>,
+  cloudRequests: Set<string>,
+  cloudEnvs: Set<string>
+) {
+  const repo = mustRepo();
+  for (const col of repo.listCollections(workspaceId)) {
+    if (!col.deletedAt && !cloudCollections.has(col.id)) repo.upsertCollection(col, true);
+    for (const folder of parentFirstFolders(repo.listFolders(col.id))) {
+      if (!folder.deletedAt && !cloudFolders.has(folder.id)) repo.upsertFolder(folder, true);
+    }
+    for (const req of repo.listRequests(col.id)) {
+      if (!req.deletedAt && !cloudRequests.has(req.id)) repo.upsertRequest(req, true);
+    }
+  }
+  for (const env of repo.listEnvironments(workspaceId)) {
+    if (!env.deletedAt && !cloudEnvs.has(env.id)) repo.upsertEnvironment(env, true);
+  }
 }
 
 export type PushReject = {
@@ -399,6 +506,7 @@ export type PushReject = {
 export async function pushQueue(): Promise<{ rejected: PushReject[] }> {
   if (!runtime.supabase || !runtime.user) return { rejected: [] };
   const repo = mustRepo();
+  repo.recoverSendingOps();
   const ops = repo.pendingOps();
   if (ops.length === 0) return { rejected: [] };
   for (const op of ops) repo.markSending(op.id);
@@ -417,14 +525,18 @@ export async function pushQueue(): Promise<{ rejected: PushReject[] }> {
     if (applied.has(op.idempotencyKey)) {
       repo.ackOp(op.id);
       repo.rememberIdempotency(op.idempotencyKey);
+      if (op.workspaceId) repo.resolveConflictsForEntity(op.workspaceId, op.entityId);
       continue;
     }
     const hit = rejected.find((r) => r.idempotencyKey === op.idempotencyKey);
     const reason = hit?.reason ?? "rejected";
-    if ((reason === "conflict" || reason === "deleted") && op.workspaceId) {
+    if (reason.startsWith("write_failed")) {
+      repo.markOp(op.id, "failed", reason.replace(/^write_failed:/, "") || reason);
+    } else if ((reason === "conflict" || reason === "deleted") && op.workspaceId) {
       revertStaleOp(op, hit);
-      repo.addConflict(op.workspaceId, op.entityId, { op, reason, latest: hit?.current });
-      repo.markOp(op.id, "conflict", reason === "deleted" ? "Remote item was deleted." : "Remote version is newer.");
+      const silent = reason === "conflict" && sameEntityContent(op.payload, hit?.current);
+      if (!silent) repo.addConflict(op.workspaceId, op.entityId, { op, reason, latest: hit?.current });
+      repo.rejectOp(op.id, reason === "deleted" ? "Remote item was deleted." : silent ? "Already on server." : "Remote version is newer.");
     } else if (reason === "already_deleted") {
       repo.ackOp(op.id);
     } else {
@@ -497,15 +609,38 @@ export async function pullWorkspace(workspaceId: string) {
   const after = repo.getCursor(workspaceId);
   const { data, error } = await runtime.supabase.functions.invoke("sync-pull", { body: { workspaceId, afterSeq: after } });
   if (error) throw error;
-  const changes = (data?.changes ?? []) as ChangeLogRow[];
-  for (const row of changes) {
+  const changes = (data?.changes ?? []) as Record<string, unknown>[];
+  for (const raw of changes) {
+    const row = normalizeChangeLogRow(raw);
+    if (!row) continue;
     applyChange(row);
     repo.setCursor(workspaceId, row.seq);
   }
 }
 
+function normalizeChangeLogRow(raw: Record<string, unknown>): ChangeLogRow | null {
+  const entityId = String(raw.entityId ?? raw.entity_id ?? "");
+  const workspaceId = String(raw.workspaceId ?? raw.workspace_id ?? "");
+  const entityType = (raw.entityType ?? raw.entity_type) as ChangeLogRow["entityType"] | undefined;
+  const op = raw.op as ChangeLogRow["op"] | undefined;
+  if (!entityId || !workspaceId || !entityType || (op !== "upsert" && op !== "delete")) return null;
+  return {
+    seq: Number(raw.seq ?? 0),
+    workspaceId,
+    entityType,
+    entityId,
+    op,
+    version: Number(raw.version ?? 0),
+    payload: raw.payload,
+    actorId: String(raw.actorId ?? raw.actor_id ?? ""),
+    idempotencyKey: String(raw.idempotencyKey ?? raw.idempotency_key ?? ""),
+    createdAt: String(raw.createdAt ?? raw.created_at ?? "")
+  };
+}
+
 function applyChange(row: ChangeLogRow) {
   const repo = mustRepo();
+  if (!row.entityId) return;
   if (row.idempotencyKey && repo.hasIdempotency(row.idempotencyKey)) {
     if (row.workspaceId && row.seq) repo.setCursor(row.workspaceId, row.seq);
     return;
@@ -590,19 +725,8 @@ function subscribeRealtime() {
   realtimeChannel = runtime.supabase
     .channel("changes")
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "change_log" }, (payload) => {
-      const raw = payload.new as Record<string, unknown>;
-      applyChange({
-        seq: Number(raw.seq),
-        workspaceId: String(raw.workspaceId ?? raw.workspace_id ?? ""),
-        entityType: (raw.entityType ?? raw.entity_type) as ChangeLogRow["entityType"],
-        entityId: String(raw.entityId ?? raw.entity_id ?? ""),
-        op: raw.op as ChangeLogRow["op"],
-        version: Number(raw.version),
-        payload: raw.payload,
-        actorId: String(raw.actorId ?? raw.actor_id ?? ""),
-        idempotencyKey: String(raw.idempotencyKey ?? raw.idempotency_key ?? ""),
-        createdAt: String(raw.createdAt ?? raw.created_at ?? "")
-      });
+      const row = normalizeChangeLogRow(payload.new as Record<string, unknown>);
+      if (row) applyChange(row);
       emit("sync.live", payload.new);
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "memberships" }, () => {

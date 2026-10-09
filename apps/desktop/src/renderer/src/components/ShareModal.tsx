@@ -42,7 +42,7 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
         role
       });
       setEmail("");
-      if (res.mode === "direct") setMessage("Access granted. They’ll see an in-app notification — no email is sent.");
+      if (res.mode === "direct") setMessage("Access granted. They’ll see an in-app notification.");
       else setMessage("Access updated.");
       await refresh();
     } catch (e) {

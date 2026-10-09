@@ -58,19 +58,29 @@ body {
   border-radius: 999px;
 }
 
-.monaco-editor,
-.monaco-editor .overflow-guard {
-  width: 100% !important;
-  height: 100% !important;
+.monaco-editor {
+  outline: none;
 }
 
 .monaco-editor,
+.monaco-editor * {
+  box-sizing: content-box;
+}
+
 .monaco-editor .overflow-guard,
-.monaco-editor .monaco-editor-background,
-.monaco-editor .margin,
-.monaco-editor .glyph-margin,
-.monaco-editor .sticky-widget {
-  background-color: var(--canvas) !important;
+.monaco-editor .monaco-scrollable-element {
+  box-sizing: border-box;
+}
+
+.monaco-editor textarea.inputarea {
+  position: absolute !important;
+  color: transparent !important;
+  background: transparent !important;
+  resize: none !important;
+}
+
+.monaco-editor .overflowingContentWidgets {
+  z-index: 50;
 }
 
 .method-GET { color: #099250; }

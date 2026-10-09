@@ -38,6 +38,9 @@ export default defineConfig({
     plugins: [react()],
     css: {
       postcss: resolve("postcss.config.js")
+    },
+    optimizeDeps: {
+      include: ["monaco-editor", "@monaco-editor/react"]
     }
   }
 });

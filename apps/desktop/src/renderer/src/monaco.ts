@@ -1,9 +1,10 @@
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
-import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
+import "monaco-editor/min/vs/editor/editor.main.css";
+import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker&inline";
+import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker&inline";
+import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker&inline";
+import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker&inline";
 
 self.MonacoEnvironment = {
   getWorker(_id: string, label: string) {
@@ -22,6 +23,18 @@ monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
   enableSchemaRequest: false,
   schemas: [],
   trailingCommas: "error"
+});
+monaco.languages.json.jsonDefaults.setModeConfiguration({
+  documentFormattingEdits: true,
+  documentRangeFormattingEdits: true,
+  completionItems: true,
+  hovers: true,
+  documentSymbols: true,
+  tokens: true,
+  colors: true,
+  foldingRanges: true,
+  diagnostics: true,
+  selectionRanges: true
 });
 
 /** Keep in sync with CSS tokens in styles/index.css */

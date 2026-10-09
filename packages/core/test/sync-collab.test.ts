@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   applyRemoteChanges,
+  cloudSortOrder,
   evaluatePush,
   mergeQueue,
   refuseEmptyOverwrite,
+  sameEntityContent,
   summarizeState,
   syncStatusLabel,
   tabOnRemoteUpdate
@@ -57,9 +59,23 @@ describe("concurrent save versions", () => {
     expect(evaluatePush({ version: 4, deletedAt: "x" }, { op: "delete", version: 4, baseVersion: 3 })).toBe("already_deleted");
   });
 
-  it("creates only when the server has no row and the base is 0", () => {
+  it("creates a missing row even when local version already advanced", () => {
     expect(evaluatePush(null, { op: "upsert", version: 1, baseVersion: 0 })).toBe("apply");
-    expect(evaluatePush(null, { op: "upsert", version: 4, baseVersion: 3 })).toBe("conflict");
+    expect(evaluatePush(null, { op: "upsert", version: 4, baseVersion: 3 })).toBe("apply");
+  });
+
+  it("fits Date.now() folder/request sort keys into a Postgres integer", () => {
+    expect(cloudSortOrder(Date.now())).toBeLessThanOrEqual(2_147_483_647);
+    expect(cloudSortOrder(1_760_000_000_000)).toBe(1_760_000_000);
+    expect(cloudSortOrder(12)).toBe(12);
+  });
+
+  it("treats version-only drift as the same content", () => {
+    const a = { id: "r", name: "login", version: 7, updatedAt: "a", document: { method: "POST", url: "/x", body: { raw: "{}" } } };
+    const b = { ...a, version: 8, updatedAt: "b" };
+    expect(sameEntityContent(a, b)).toBe(true);
+    expect(sameEntityContent(a, { ...b, document: { ...a.document, method: "GET" } })).toBe(false);
+    expect(sameEntityContent(a, null)).toBe(false);
   });
 
   it("keeps a dirty tab draft and replaces a clean tab", () => {
@@ -72,6 +88,7 @@ describe("concurrent save versions", () => {
     expect(syncStatusLabel("syncing", true)).toBe("Syncing");
     expect(syncStatusLabel("synchronized", true)).toBe("Synced");
     expect(syncStatusLabel("failed", true)).toBe("Sync failed");
+    expect(syncStatusLabel("conflicted", true)).toBe("Sync failed");
     expect(syncStatusLabel("synchronized", false)).toBe("Offline");
   });
 

@@ -3,7 +3,7 @@ import { isCloudUser, type SessionInfo } from "../App";
 function syncStatusLabel(state: string | undefined, signedInCloud: boolean) {
   if (!signedInCloud) return "Offline";
   if (state === "offline") return "Offline";
-  if (state === "failed") return "Sync failed";
+  if (state === "failed" || state === "conflicted") return "Sync failed";
   if (state === "syncing") return "Syncing";
   return "Synced";
 }

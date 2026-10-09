@@ -14,8 +14,7 @@ function evaluatePush(
   const base = op.baseVersion ?? Math.max(0, Number(op.version) - 1);
   if (!current) {
     if (op.op === "delete") return "already_deleted";
-    if (base <= 0) return "apply";
-    return "conflict";
+    return "apply";
   }
   if (current.deletedAt) {
     if (op.op === "delete") return "already_deleted";
@@ -23,6 +22,15 @@ function evaluatePush(
   }
   if (Number(current.version) !== Number(base)) return "conflict";
   return "apply";
+}
+
+const PG_INT_MAX = 2_147_483_647;
+
+function cloudSortOrder(value: unknown): number {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (n <= PG_INT_MAX) return n;
+  return Math.min(PG_INT_MAX, Math.trunc(n / 1000));
 }
 
 Deno.serve(async (req) => {
@@ -101,7 +109,7 @@ Deno.serve(async (req) => {
       const latest = await loadCurrent(supabase, table, op);
       rejected.push({
         idempotencyKey: op.idempotencyKey,
-        reason: latest?.deletedAt ? "deleted" : "conflict",
+        reason: wrote.reason ? `write_failed:${wrote.reason}` : latest?.deletedAt ? "deleted" : "conflict",
         currentVersion: latest?.version,
         current: latest?.payload ?? null,
         deleted: Boolean(latest?.deletedAt)
@@ -169,7 +177,7 @@ async function canEdit(
     });
     let allowed = Boolean(direct);
     if (!allowed && op.entityType !== "collection") {
-      const collectionId = payload.collectionId as string | undefined;
+      const collectionId = (payload.collectionId ?? payload.collection_id) as string | undefined;
       if (collectionId) {
         const { data: colEdit } = await supabase.rpc("can_edit_resource", {
           p_kind: "collection",
@@ -178,7 +186,7 @@ async function canEdit(
         });
         allowed = Boolean(colEdit);
       }
-      const folderId = payload.folderId as string | undefined;
+      const folderId = (payload.folderId ?? payload.folder_id) as string | undefined;
       if (!allowed && folderId) {
         const { data: folderEdit } = await supabase.rpc("can_edit_resource", {
           p_kind: "folder",
@@ -214,13 +222,13 @@ async function writeEntity(
   table: string,
   op: { entityId: string; workspaceId: string; version: number; baseVersion?: number | null; op: "upsert" | "delete"; payload: unknown },
   current: { version: number } | null
-): Promise<{ ok: boolean }> {
+): Promise<{ ok: boolean; reason?: string }> {
   const base = op.baseVersion ?? Math.max(0, Number(op.version) - 1);
   const now = new Date().toISOString();
   if (table === "globals") {
     if (!current) {
       const { error } = await supabase.from("globals").insert({ workspace_id: op.workspaceId, payload: op.payload, version: op.version, updated_at: now });
-      return { ok: !error };
+      return { ok: !error, reason: error?.message };
     }
     const { data, error } = await supabase
       .from("globals")
@@ -228,7 +236,7 @@ async function writeEntity(
       .eq("workspace_id", op.workspaceId)
       .eq("version", base)
       .select("workspace_id");
-    return { ok: !error && Boolean(data?.length) };
+    return { ok: !error && Boolean(data?.length), reason: error?.message };
   }
   if (op.op === "delete") {
     const { data, error } = await supabase
@@ -238,25 +246,25 @@ async function writeEntity(
       .eq("version", base)
       .is("deleted_at", null)
       .select("id");
-    return { ok: !error && Boolean(data?.length) };
+    return { ok: !error && Boolean(data?.length), reason: error?.message };
   }
   if (!current) {
-    const { error } = await supabase.from(table).insert(payloadRow(op));
-    return { ok: !error };
+    const { error } = await supabase.from(table).insert(payloadRow(op, table));
+    return { ok: !error, reason: error?.message };
   }
   const { data, error } = await supabase
     .from(table)
-    .update(payloadRow(op))
+    .update(payloadRow(op, table))
     .eq("id", op.entityId)
     .eq("version", base)
     .is("deleted_at", null)
     .select("id");
-  return { ok: !error && Boolean(data?.length) };
+  return { ok: !error && Boolean(data?.length), reason: error?.message };
 }
 
-function payloadRow(op: { entityId: string; workspaceId: string; version: number; payload: unknown }) {
+function payloadRow(op: { entityId: string; workspaceId: string; version: number; payload: unknown }, table: string) {
   const p = op.payload as Record<string, unknown>;
-  return {
+  const row: Record<string, unknown> = {
     id: op.entityId,
     workspace_id: op.workspaceId,
     name: p.name ?? "Untitled",
@@ -264,13 +272,24 @@ function payloadRow(op: { entityId: string; workspaceId: string; version: number
     updated_at: new Date().toISOString(),
     created_at: p.createdAt ?? new Date().toISOString(),
     payload: op.payload,
-    deleted_at: p.deletedAt ?? null,
-    ...(p.collectionId ? { collection_id: p.collectionId } : {}),
-    ...(p.folderId !== undefined ? { folder_id: p.folderId } : {}),
-    ...(p.protocol ? { protocol: p.protocol } : {}),
-    ...(p.kind ? { kind: p.kind } : {}),
-    ...(p.ownerUserId ? { owner_user_id: p.ownerUserId } : {}),
-    ...(p.organizationId ? { organization_id: p.organizationId } : {}),
-    ...(p.sortOrder !== undefined ? { sort_order: p.sortOrder } : {})
+    deleted_at: p.deletedAt ?? null
   };
+  if (p.kind) row.kind = p.kind;
+  if (p.ownerUserId) row.owner_user_id = p.ownerUserId;
+  if (p.organizationId) row.organization_id = p.organizationId;
+  if (table === "folders") {
+    row.collection_id = p.collectionId ?? p.collection_id ?? null;
+    row.parent_id = p.parentId !== undefined ? p.parentId : p.parent_id ?? null;
+    row.sort_order = cloudSortOrder(p.sortOrder ?? p.sort_order);
+  }
+  if (table === "requests") {
+    row.collection_id = p.collectionId ?? p.collection_id ?? null;
+    row.folder_id = p.folderId !== undefined ? p.folderId : p.folder_id ?? null;
+    row.project_id = p.projectId !== undefined ? p.projectId : p.project_id ?? null;
+    row.protocol = p.protocol ?? "http";
+    row.favorite = Boolean(p.favorite);
+    row.sort_order = cloudSortOrder(p.sortOrder ?? p.sort_order);
+  }
+  if (table === "projects" && p.sortOrder !== undefined) row.sort_order = cloudSortOrder(p.sortOrder);
+  return row;
 }

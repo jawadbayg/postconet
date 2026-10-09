@@ -93,6 +93,79 @@ describe("sqlite repo", () => {
     closeDatabase(db);
   });
 
+  it("starts a fresh op after a rejection instead of replaying a stale base version", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pc-"));
+    dirs.push(dir);
+    const db = openDatabase(join(dir, "studio.db"));
+    const repo = new StudioRepo(db, "acct");
+    const req = {
+      id: createId("req"),
+      workspaceId: createId("ws"),
+      collectionId: createId("col"),
+      folderId: null,
+      projectId: null,
+      name: "One",
+      protocol: "http" as const,
+      sortOrder: Date.now(),
+      document: emptyHttpDocument(),
+      examples: [],
+      favorite: false,
+      archivedAt: null,
+      deletedAt: null,
+      version: 1,
+      updatedAt: nowIso(),
+      createdAt: nowIso()
+    };
+    repo.upsertRequest(req);
+    const first = repo.pendingOps()[0]!;
+    repo.rejectOp(first.id, "Remote version is newer.");
+    expect(repo.pendingOps()).toHaveLength(0);
+    // Server now holds v7; local was reverted to it, then the user saves v8.
+    req.name = "Two";
+    req.version = 8;
+    repo.upsertRequest(req);
+    const ops = repo.pendingOps();
+    expect(ops).toHaveLength(1);
+    expect(ops[0]?.id).not.toBe(first.id);
+    expect(ops[0]?.baseVersion).toBe(7);
+    expect((ops[0]?.payload as { name: string }).name).toBe("Two");
+    closeDatabase(db);
+  });
+
+  it("acking an op retires older queued ops for the same item", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pc-"));
+    dirs.push(dir);
+    const db = openDatabase(join(dir, "studio.db"));
+    const repo = new StudioRepo(db, "acct");
+    const folder: Folder = {
+      id: createId("fld"),
+      workspaceId: createId("ws"),
+      collectionId: createId("col"),
+      parentId: null,
+      name: "F",
+      auth: emptyAuth("inherit"),
+      scripts: emptyScripts(),
+      sortOrder: Date.now(),
+      archivedAt: null,
+      deletedAt: null,
+      version: 1,
+      updatedAt: nowIso(),
+      createdAt: nowIso()
+    };
+    repo.upsertFolder(folder);
+    const stale = repo.pendingOps()[0]!;
+    repo.markOp(stale.id, "failed", "boom");
+    repo.markSending(stale.id);
+    folder.version = 2;
+    repo.upsertFolder(folder);
+    const fresh = repo.pendingOps().find((op) => op.id !== stale.id)!;
+    repo.ackOp(fresh.id);
+    repo.recoverSendingOps();
+    expect(repo.pendingOps()).toHaveLength(0);
+    expect(repo.firstFailedError()).toBeNull();
+    closeDatabase(db);
+  });
+
   it("tracks folder descendants and persists collection moves", () => {
     const dir = mkdtempSync(join(tmpdir(), "pc-"));
     dirs.push(dir);

@@ -374,7 +374,19 @@ export function RequestWorkbench(props: {
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-1 text-xs">
                     {["none", "json", "text", "xml", "html", "javascript", "urlencoded", "formdata"].map((mode) => (
-                      <button key={mode} className={doc.body.mode === mode ? "text-[var(--accent)]" : "text-[var(--muted)]"} onClick={() => patchDoc({ body: { ...doc.body, mode } })}>
+                      <button
+                        key={mode}
+                        className={doc.body.mode === mode ? "text-[var(--accent)]" : "text-[var(--muted)]"}
+                        onClick={() =>
+                          patchDoc({
+                            body: {
+                              ...doc.body,
+                              mode,
+                              language: mode === "json" ? "json" : doc.body.language
+                            }
+                          })
+                        }
+                      >
                         {mode}
                       </button>
                     ))}

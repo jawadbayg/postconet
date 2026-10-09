@@ -22,7 +22,7 @@ Deno.serve(async (req) => {
   };
 
   const { data: owner } = await userClient.rpc("is_workspace_owner", { ws: body.workspaceId });
-  if (!owner && body.action !== "list") return json({ error: "forbidden" }, 403);
+  if (!owner && body.action !== "list") return json({ error: "forbidden" });
 
   if (body.action === "list") {
     const shares = await userClient
@@ -38,6 +38,7 @@ Deno.serve(async (req) => {
       .eq("resource_kind", body.resourceKind)
       .eq("resource_id", body.resourceId);
     return json({
+      ok: true,
       shares: shares.data ?? [],
       invitations: invites.data ?? []
     });
@@ -45,7 +46,7 @@ Deno.serve(async (req) => {
 
   if (body.action === "revoke_share" && body.shareId) {
     const { error } = await userClient.from("resource_shares").delete().eq("id", body.shareId);
-    if (error) return json({ error: error.message }, 400);
+    if (error) return json({ error: error.message });
     return json({ ok: true });
   }
   if (body.action === "revoke_invite" && body.invitationId) {
@@ -53,13 +54,13 @@ Deno.serve(async (req) => {
       .from("share_invitations")
       .update({ revoked_at: new Date().toISOString() })
       .eq("id", body.invitationId);
-    if (error) return json({ error: error.message }, 400);
+    if (error) return json({ error: error.message });
     return json({ ok: true });
   }
   if (body.action === "update_role" && body.shareId && body.role) {
     const { error } = await userClient.from("resource_shares").update({ role: body.role }).eq("id", body.shareId);
-    if (error) return json({ error: error.message }, 400);
+    if (error) return json({ error: error.message });
     return json({ ok: true });
   }
-  return json({ error: "unknown_action" }, 400);
+  return json({ error: "unknown_action" });
 });
