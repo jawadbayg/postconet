@@ -6,6 +6,7 @@ import { languageForBodyMode, languageForText } from "../lib/editorLanguage";
 import { invoke } from "../lib/ipc";
 import { KeyValueEditor } from "./KeyValueEditor";
 import { StreamPanel } from "./StreamPanel";
+import { DispatchLoaderOverlay } from "./DispatchLoader";
 import type { RequestRecord, Tab } from "../screens/Studio";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"];
@@ -248,7 +249,7 @@ export function RequestWorkbench(props: {
         />
         {!streaming && (
         <button className="rounded-md bg-[var(--accent)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50" onClick={() => void send()} disabled={sending}>
-          {sending ? "Sending" : "Send"}
+          Send
         </button>
         )}
         {sending && executionId && (
@@ -284,7 +285,9 @@ export function RequestWorkbench(props: {
       {streaming ? (
         <StreamPanel requestId={tab.request.id} protocol={protocol as "websocket" | "sse" | "mqtt" | "socketio"} url={doc.url} />
       ) : protocol === "mcp" || protocol === "grpc" ? null : (
-      <PanelGroup direction="vertical" className="min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1">
+      {sending && <DispatchLoaderOverlay size={140} />}
+      <PanelGroup direction="vertical" className="h-full min-h-0">
         <Panel defaultSize={52} minSize={25}>
           <div className="flex h-full flex-col">
             <div className="flex gap-1 border-b border-[var(--border)] px-2 text-xs">
@@ -512,6 +515,7 @@ export function RequestWorkbench(props: {
           </div>
         </Panel>
       </PanelGroup>
+      </div>
       )}
     </div>
   );

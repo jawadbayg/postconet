@@ -35,3 +35,8 @@ export function accountDir(userId: string): string {
 export function dbPath(userId: string): string {
   return join(accountDir(userId), "studio.db");
 }
+
+export function wipeAccountFiles(userId: string) {
+  const dir = join(app.getPath("userData"), "accounts", userId);
+  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+}

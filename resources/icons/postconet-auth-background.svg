@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+<defs>
+ <radialGradient id="pc-aura"><stop stop-color="#215dff" stop-opacity=".17"/><stop offset=".55" stop-color="#215dff" stop-opacity=".055"/><stop offset="1" stop-color="#215dff" stop-opacity="0"/></radialGradient>
+ <linearGradient id="pc-flow" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#2861ef" stop-opacity="0"/><stop offset=".35" stop-color="#356fff" stop-opacity=".3"/><stop offset=".7" stop-color="#80b2ff" stop-opacity=".65"/><stop offset="1" stop-color="#356fff" stop-opacity="0"/></linearGradient>
+ <radialGradient id="pc-vignette"><stop offset=".35" stop-color="#181b23" stop-opacity="0"/><stop offset="1" stop-color="#181b23" stop-opacity=".8"/></radialGradient>
+ <pattern id="pc-grid" width="48" height="48" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".8" fill="#8ea2ca" opacity=".13"/></pattern>
+ <path pathLength="1600" id="pc-route-a" d="M-150 880C130 875 120 470 425 330S810 255 1150-110"/>
+ <path pathLength="1600" id="pc-route-b" d="M-120 1030C200 985 185 675 555 710S940 475 1110 350"/>
+ <path pathLength="1600" id="pc-route-c" d="M-170 680C110 750 220 335 430 255S730 255 1080-120"/>
+ <path pathLength="1600" id="pc-route-d" d="M-80 1100C360 980 415 830 685 865S1000 650 1120 590"/>
+</defs>
+<style>
+ .pc-bg-halo{transform-origin:500px 480px;animation:pc-bg-breathe 14s ease-in-out infinite alternate}
+ .pc-bg-line{fill:none;stroke:url(#pc-flow);stroke-width:1;opacity:.25}
+ .pc-bg-trail{fill:none;stroke:url(#pc-flow);stroke-width:1.6;stroke-linecap:round;stroke-dasharray:65 1535;animation:pc-bg-send 12s linear infinite}
+ .pc-bg-t2{animation-duration:15s;animation-delay:-7s;opacity:.6}
+ .pc-bg-t3{animation-duration:18s;animation-delay:-11s;opacity:.45}
+ .pc-bg-t4{animation-duration:16s;animation-delay:-3s;opacity:.6}
+ .pc-bg-star{animation:pc-bg-twinkle 7s ease-in-out infinite alternate}
+ @keyframes pc-bg-send{from{stroke-dashoffset:1600}to{stroke-dashoffset:0}}
+ @keyframes pc-bg-breathe{from{transform:translate(-25px,15px) scale(.94);opacity:.65}to{transform:translate(30px,-25px) scale(1.1);opacity:1}}
+ @keyframes pc-bg-twinkle{from{opacity:.1}to{opacity:.5}}
+ @media(prefers-reduced-motion:reduce){.pc-bg-halo,.pc-bg-trail,.pc-bg-star{animation:none}.pc-bg-trail{opacity:.2}}
+</style>
+<rect width="1000" height="1000" fill="#181b23"/>
+<rect width="1000" height="1000" fill="url(#pc-grid)"/>
+<ellipse class="pc-bg-halo" cx="490" cy="455" rx="470" ry="390" fill="url(#pc-aura)"/>
+<g class="pc-bg-line"><use href="#pc-route-a"/><use href="#pc-route-b"/><use href="#pc-route-c"/><use href="#pc-route-d"/></g>
+<g>
+ <use class="pc-bg-trail" href="#pc-route-a" pathLength="1600"/>
+ <use class="pc-bg-trail pc-bg-t2" href="#pc-route-b" pathLength="1600"/>
+ <use class="pc-bg-trail pc-bg-t3" href="#pc-route-c" pathLength="1600"/>
+ <use class="pc-bg-trail pc-bg-t4" href="#pc-route-d" pathLength="1600"/>
+</g>
+<g fill="#80aaff">
+ <circle class="pc-bg-star" cx="234" cy="275" r="1.4"/>
+ <circle class="pc-bg-star" cx="775" cy="382" r="1.1" style="animation-delay:-3s"/>
+ <circle class="pc-bg-star" cx="726" cy="782" r="1.5" style="animation-delay:-5s"/>
+ <circle class="pc-bg-star" cx="172" cy="710" r="1.1" style="animation-delay:-2s"/>
+</g>
+<rect width="1000" height="1000" fill="url(#pc-vignette)"/>
+</svg>

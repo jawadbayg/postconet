@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.47.10";
 import { cors, json } from "../_shared/cors.ts";
-import { sendInviteEmail } from "../_shared/email.ts";
+// v1: in-app users only. Do not send SMTP / Resend.
+// import { sendInviteEmail } from "../_shared/email.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -39,63 +40,31 @@ Deno.serve(async (req) => {
   const { data: granteeId } = await admin.rpc("lookup_user_id_by_email", { p_email: email });
   const invitedByName = (user.user_metadata?.display_name as string) || user.email || "A teammate";
 
-  if (granteeId) {
-    if (granteeId === user.id) return json({ error: "cannot_share_with_self" }, 400);
-    const { error } = await admin.from("resource_shares").upsert({
-      workspace_id: body.workspaceId,
-      resource_kind: body.resourceKind,
-      resource_id: body.resourceId,
-      grantee_user_id: granteeId,
-      role: body.role,
-      created_by: user.id
-    }, { onConflict: "resource_kind,resource_id,grantee_user_id" });
-    if (error) return json({ error: error.message }, 400);
-    await admin.from("notifications").insert({
-      user_id: granteeId,
-      kind: "share_granted",
-      title: `${invitedByName} shared “${name}” with you`,
-      body: `You have ${body.role} access.`,
-      payload: { workspaceId: body.workspaceId, resourceKind: body.resourceKind, resourceId: body.resourceId, role: body.role }
-    });
-    return json({ ok: true, mode: "direct", registered: true });
+  if (!granteeId) {
+    return json({ error: "user_not_found" }, 404);
   }
-
-  const token = crypto.randomUUID() + crypto.randomUUID();
-  const tokenHash = await sha256(token);
-  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const { error } = await admin.from("share_invitations").insert({
+  if (granteeId === user.id) return json({ error: "cannot_share_with_self" }, 400);
+  const { error } = await admin.from("resource_shares").upsert({
     workspace_id: body.workspaceId,
     resource_kind: body.resourceKind,
     resource_id: body.resourceId,
-    resource_name: name,
-    email,
+    grantee_user_id: granteeId,
     role: body.role,
-    token_hash: tokenHash,
-    invited_by: user.id,
-    expires_at: expires
-  });
+    created_by: user.id
+  }, { onConflict: "resource_kind,resource_id,grantee_user_id" });
   if (error) return json({ error: error.message }, 400);
-
-  const base = Deno.env.get("APP_INVITE_URL") ?? `${url}/functions/v1/share-landing`;
-  const acceptUrl = `${base}?token=${encodeURIComponent(token)}`;
-  const emailResult = await sendInviteEmail({
-    to: email,
-    resourceName: name,
-    role: body.role,
-    acceptUrl,
-    invitedBy: invitedByName
+  await admin.from("notifications").insert({
+    user_id: granteeId,
+    kind: "share_granted",
+    title: `${invitedByName} shared “${name}” with you`,
+    body: `You have ${body.role} access.`,
+    payload: { workspaceId: body.workspaceId, resourceKind: body.resourceKind, resourceId: body.resourceId, role: body.role }
   });
-  return json({ ok: true, mode: "invited", registered: false, email: emailResult });
+  return json({ ok: true, mode: "direct", registered: true });
 });
 
 async function resourceName(admin: ReturnType<typeof createClient>, kind: string, id: string) {
   const table = kind === "collection" ? "collections" : kind === "folder" ? "folders" : "requests";
   const { data } = await admin.from(table).select("name").eq("id", id).maybeSingle();
   return data?.name as string | undefined;
-}
-
-async function sha256(value: string) {
-  const bytes = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

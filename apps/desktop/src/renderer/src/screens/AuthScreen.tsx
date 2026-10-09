@@ -1,9 +1,41 @@
 import { useState } from "react";
+import { Check, Eye, EyeOff } from "lucide-react";
 import { invoke } from "../lib/ipc";
 import type { SessionInfo } from "../App";
+import authBackground from "../../../../../../resources/icons/postconet-auth-background.svg?url";
 import { BrandMark } from "../components/BrandMark";
+import { DispatchLoaderOverlay } from "../components/DispatchLoader";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
-type Mode = "signin" | "signup" | "reset";
+type Mode = "signin" | "signup";
+
+function passwordRules(password: string) {
+  return {
+    length: password.length >= 6,
+    letter: /[A-Za-z]/.test(password),
+    number: /\d/.test(password)
+  };
+}
+
+function passwordIsValid(password: string) {
+  const rules = passwordRules(password);
+  return rules.length && rules.letter && rules.number;
+}
+
+function Rule(props: { met: boolean; label: string }) {
+  return (
+    <li className={`flex items-center gap-1.5 ${props.met ? "text-emerald-600" : "text-[var(--muted)]"}`}>
+      <Check size={12} strokeWidth={2.5} aria-hidden className={props.met ? "" : "invisible"} />
+      {props.label}
+    </li>
+  );
+}
+
+type SignInResult = {
+  user: SessionInfo["user"];
+  pending?: boolean;
+  localData?: { collections: number; requests: number; environments: number } | null;
+};
 
 export function AuthScreen(props: {
   cloudConfigured: boolean;
@@ -11,40 +43,27 @@ export function AuthScreen(props: {
   onContinueLocal: () => void;
   theme: "light" | "dark";
   onTheme: (t: "light" | "dark") => void;
-  initialMode?: Mode;
+  initialMode?: Mode | "reset";
 }) {
-  const [mode, setMode] = useState<Mode>(props.initialMode ?? "signin");
+  const [mode, setMode] = useState<Mode>(props.initialMode === "signup" ? "signup" : "signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [merge, setMerge] = useState<SignInResult | null>(null);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function finishSignIn(mergeLocal: boolean) {
     setBusy(true);
     setError(null);
-    setMessage(null);
     try {
-      if (mode === "signup") {
-        const res = await invoke<{ needsVerification: boolean; user: { id: string; email?: string } | null }>("auth.signUp", {
-          email,
-          password,
-          displayName
-        });
-        if (res.needsVerification) setMessage("Check your email to verify your account, then sign in.");
-        else if (res.user) {
-          const user = await invoke<SessionInfo["user"]>("auth.signIn", { email, password });
-          props.onAuthed(user);
-        }
-      } else if (mode === "reset") {
-        await invoke("auth.resetPassword", { email });
-        setMessage("If an account exists, a reset email is on its way.");
-      } else {
-        const user = await invoke<SessionInfo["user"]>("auth.signIn", { email, password });
-        props.onAuthed(user);
-      }
+      const user = await invoke<SessionInfo["user"]>("auth.completeSignIn", { mergeLocal });
+      setMerge(null);
+      props.onAuthed(user);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -52,17 +71,71 @@ export function AuthScreen(props: {
     }
   }
 
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setMessage(null);
+    if (mode === "signup") {
+      if (!passwordIsValid(password)) {
+        setError("Use at least 6 characters, including a letter and a number.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError("Passwords do not match.");
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        await invoke("auth.signUp", { email, password, displayName });
+      }
+      const result = await invoke<SignInResult>("auth.signIn", { email, password });
+      if (result.pending && result.localData) {
+        setMerge(result);
+        return;
+      }
+      props.onAuthed(result.user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const local = merge?.localData;
+  const rules = passwordRules(password);
+  const passwordOk = passwordIsValid(password);
+  const confirmOk = confirmPassword.length > 0 && confirmPassword === password;
+  const confirmMismatch = confirmPassword.length > 0 && confirmPassword !== password;
+
+  function switchMode() {
+    setMode(mode === "signup" ? "signin" : "signup");
+    setConfirmPassword("");
+    setShowPassword(false);
+    setShowConfirm(false);
+    setError(null);
+    setMessage(null);
+  }
+
   return (
-    <div className="flex h-full flex-col bg-[#f4f5f7] text-[#12151a] dark:bg-[#0f1115] dark:text-[#eef0f4]">
-      <div className="titlebar-drag h-12" />
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-6 pb-16">
-        <div className="mb-8">
-          <BrandMark size={48} className="mb-4" />
-          <div className="text-xs uppercase tracking-[0.18em] text-[#667085]">API Studio</div>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[#12151a] dark:text-[#eef0f4]">PostConet</h1>
-          <p className="mt-2 text-sm text-[#667085]">Sign in with email.</p>
+    <div className="flex h-full min-h-0 w-full flex-1 overflow-hidden bg-[#f4f5f7] text-[#12151a] dark:bg-[#0f1115] dark:text-[#eef0f4]">
+      <div className="grid h-full min-h-0 w-full grid-cols-2 overflow-hidden">
+        <div className="relative flex h-full flex-col items-center justify-center overflow-hidden border-r border-[var(--border)] px-10 text-center">
+          <img src={authBackground} alt="" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
+          <div className="relative flex flex-col items-center">
+            <BrandMark size={64} className="mb-5" />
+            <div className="text-xs uppercase tracking-[0.18em] text-[#c5cedd]">API Studio</div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">PostConet</h1>
+            <p className="mt-3 max-w-xs text-sm text-[#c5cedd]">
+              {mode === "signup" ? "Create an in-app account and sign in." : "Sign in to your in-app account."}
+            </p>
+          </div>
         </div>
-        <form onSubmit={submit} className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5 shadow-sm">
+        <div className="titlebar-no-drag flex h-full min-h-0 flex-col justify-center overflow-y-auto px-8">
+          <div className="mx-auto w-full max-w-md">
+        <form onSubmit={submit} className="relative space-y-3 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5 shadow-sm">
+          {busy && <DispatchLoaderOverlay size={120} />}
           {mode === "signup" && (
             <label className="block text-xs font-medium">
               Name
@@ -73,29 +146,89 @@ export function AuthScreen(props: {
             Email
             <input type="email" className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--canvas)] px-3 py-2 text-sm" value={email} onChange={(e) => setEmail(e.target.value)} required />
           </label>
-          {mode !== "reset" && (
-            <label className="block text-xs font-medium">
-              Password
-              <input type="password" minLength={8} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--canvas)] px-3 py-2 text-sm" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </label>
+          <div>
+            <label htmlFor="auth-password" className="block text-xs font-medium">Password</label>
+            <div className="relative mt-1">
+              <input
+                id="auth-password"
+                type={showPassword ? "text" : "password"}
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                className="w-full rounded-md border border-[var(--border)] bg-[var(--canvas)] py-2 pl-3 pr-10 text-sm"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+              <button
+                type="button"
+                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[var(--muted)]"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((open) => !open)}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {mode === "signup" && (
+              <ul className="mt-2 space-y-1 text-[11px]">
+                <Rule met={rules.length} label="At least 6 characters" />
+                <Rule met={rules.letter} label="At least 1 letter" />
+                <Rule met={rules.number} label="At least 1 number" />
+              </ul>
+            )}
+          </div>
+          {mode === "signup" && (
+            <div>
+              <label htmlFor="auth-confirm" className="block text-xs font-medium">Confirm password</label>
+              <div className="relative mt-1">
+                <input
+                  id="auth-confirm"
+                  type={showConfirm ? "text" : "password"}
+                  autoComplete="new-password"
+                  className="w-full rounded-md border border-[var(--border)] bg-[var(--canvas)] py-2 pl-3 pr-16 text-sm"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-10 flex items-center">
+                  {confirmOk && <Check className="text-emerald-600" size={16} strokeWidth={2.5} aria-label="Passwords match" />}
+                </span>
+                <button
+                  type="button"
+                  className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[var(--muted)]"
+                  aria-label={showConfirm ? "Hide confirm password" : "Show confirm password"}
+                  onClick={() => setShowConfirm((open) => !open)}
+                >
+                  {showConfirm ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {confirmMismatch && <p className="mt-1 text-[11px] text-red-600">Passwords do not match.</p>}
+            </div>
           )}
           {error && <div className="text-sm text-red-600">{error}</div>}
           {message && <div className="text-sm text-emerald-600">{message}</div>}
-          <button disabled={busy || !props.cloudConfigured} className="w-full rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-            {busy ? "Working…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset email" : "Sign in"}
+          <button disabled={busy || !props.cloudConfigured || (mode === "signup" && (!passwordOk || !confirmOk))} className="w-full rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+            {mode === "signup" ? "Create account" : "Sign in"}
           </button>
         </form>
         <div className="mt-4 flex flex-wrap gap-3 text-xs text-[var(--muted)]">
-          <button className="underline" onClick={() => setMode(mode === "signup" ? "signin" : "signup")}>
+          <button className="underline" onClick={switchMode}>
             {mode === "signup" ? "Have an account? Sign in" : "Create an account"}
           </button>
-          <button className="underline" onClick={() => setMode("reset")}>Forgot password</button>
           <button className="underline" onClick={props.onContinueLocal}>Continue offline</button>
-          <button className="underline" onClick={() => props.onTheme(props.theme === "dark" ? "light" : "dark")}>
-            {props.theme === "dark" ? "Light" : "Dark"} theme
-          </button>
+        </div>
+          </div>
         </div>
       </div>
+      {merge && local && (
+        <ConfirmDialog
+          title="Sync offline data?"
+          body={`This Mac has ${local.collections} collection${local.collections === 1 ? "" : "s"} and ${local.requests} API${local.requests === 1 ? "" : "s"} from offline use. Upload them to your account, or keep them only on this Mac?`}
+          confirmLabel="Sync to account"
+          cancelLabel="Don't sync"
+          danger={false}
+          onConfirm={() => void finishSignIn(true)}
+          onCancel={() => void finishSignIn(false)}
+        />
+      )}
     </div>
   );
 }

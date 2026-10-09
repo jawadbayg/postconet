@@ -1,3 +1,4 @@
+/** v1 does not send mail. Kept for a later SMTP/Resend release. */
 export async function sendInviteEmail(opts: {
   to: string;
   resourceName: string;

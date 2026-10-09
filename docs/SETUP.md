@@ -67,11 +67,16 @@ Dashboard path for the service-role key (support/CLI only): **Project Settings �
 
 ---
 
-## 3. Email / password authentication
+## 3. Email / password authentication (v1: in-app users, no mail)
+
+v1 accounts live in Supabase Auth but **do not send email**. Google Auth and SMTP can come later.
 
 1. Left sidebar → **Authentication** → **Providers**.
-2. Open **Email**. Enable it. Enable **Confirm email**.
-3. Leave phone/OAuth off unless you add them later. PostConet’s login form is email + password.
+2. Open **Email**. Enable it. **Turn Confirm email OFF.** If Confirm email stays on, signup still works because the app creates a confirmed user through the `register` function, but leftover Auth mails may fire.
+3. Leave phone / Google / OAuth off for now.
+4. Do **not** enable Custom SMTP.
+
+Use any email-shaped login (`alice@postconet.local` is fine). It does not need a real inbox. Share only works for an address that already has an account.
 
 ### Redirect URLs (no PostConet domain required)
 
@@ -95,18 +100,9 @@ Leave **http://localhost:3000** — that is a Next.js default and is wrong for t
 
 The confirmation link in the email still goes to `*.supabase.co` first (https). After verify it can open the Mac app via `postconet://`. When you later buy a domain, you can change Site URL to `https://yourdomain.com` and keep the `postconet://` redirects.
 
-### Auth SMTP (skip until you have a domain)
+### Auth SMTP (v1: leave off)
 
-**Do not enable Custom SMTP yet.** Leave the page cancelled / off.
-
-You cannot honestly fill `noreply@yourdomain.com` without a domain, and Gmail/Outlook will reject or spam mail from an unverified host. While developing, keep Supabase’s **built-in** Auth email (rate-limited, check spam). That is enough for sign-up confirmation and password reset.
-
-When you have a domain, use Resend (or similar) twice:
-
-- **Auth SMTP** (this page): so verification mail comes from `noreply@yourdomain.com`
-- **Edge Function secrets** `RESEND_API_KEY`: so *collection sharing* mail is sent (Auth SMTP never sends those)
-
-Do **not** assume Auth SMTP will send “someone shared a collection with you” emails.
+**Do not enable Custom SMTP.** Signup, sharing, and password reset do not send mail in this version. Sharing checks the Auth users table and writes an in-app notification only.
 
 ### CLI (this repo already has `supabase/`)
 
@@ -162,11 +158,13 @@ After pulling sync changes, re-apply SQL (`0005_sync_atomicity.sql` or the lates
 
 Deploy at least:
 
+- `register` (in-app signup; JWT verification **off**)
 - `sync-push`, `sync-pull`
 - `share-invite`, `share-accept`, `share-manage`, `share-landing`
 - `invite-accept`, `account-delete` (org/account)
 
 ```bash
+npx supabase functions deploy register --no-verify-jwt
 npx supabase functions deploy sync-push
 npx supabase functions deploy sync-pull
 npx supabase functions deploy share-invite
@@ -175,13 +173,9 @@ npx supabase functions deploy share-manage
 npx supabase functions deploy share-landing
 ```
 
-Set secrets (Dashboard → Edge Functions → Secrets, or CLI):
+`register` must be callable without a signed-in user. If you deploy from the dashboard, turn **Verify JWT** off for that function.
 
-```bash
-npx supabase secrets set RESEND_API_KEY=re_...
-npx supabase secrets set INVITE_FROM_EMAIL="PostConet <invites@yourdomain.com>"
-npx supabase secrets set APP_INVITE_URL="https://YOUR_PROJECT.supabase.co/functions/v1/share-landing"
-```
+v1 does not need Resend secrets. Skip them until you add a domain.
 
 `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically for deployed functions. Do not put the service role in the desktop env.
 
@@ -189,17 +183,11 @@ npx supabase secrets set APP_INVITE_URL="https://YOUR_PROJECT.supabase.co/functi
 
 ---
 
-## 6. Transactional email for sharing (Resend)
+## 6. Transactional email for sharing (later)
 
-Sharing invitations are **not** Auth emails.
+v1 does **not** send share emails. If the address already has a PostConet account, they get an in-app notification. If it does not, Share returns “no account” — they must sign up in the app first.
 
-1. Create a [Resend](https://resend.com) account.
-2. Add and verify your sending domain (required for Gmail/Outlook deliverability). For a first test you can use Resend’s onboarding sender, then switch to `invites@yourdomain.com`.
-3. Create an API key. Store it only as `RESEND_API_KEY` in Edge Function secrets.
-4. Set `INVITE_FROM_EMAIL` to a verified sender.
-5. Send a test share to a Gmail address, an Outlook address, and a mailbox on your domain.
-
-If `RESEND_API_KEY` is missing, the invite is still stored (expiry + accept-after-signup) but the email is not sent. The Share dialog reports that.
+When you have a domain, Resend can be wired back through `RESEND_API_KEY` for people who are not registered yet.
 
 ---
 
@@ -212,8 +200,8 @@ Dashboard → **Database** → **Publications** (or **Replication**): `supabase_
 ## 8. Confirm the wiring
 
 1. Restart the desktop app after `.env` is filled.
-2. Gear (bottom of the left rail) → **Sign up** with a real inbox.
-3. Verify the Auth email, then **Log in**.
+2. Gear (bottom of the left rail) → **Sign up** with any email-shaped address (for example `alice@postconet.local`) and a password. You are signed in immediately.
+3. No verification email should arrive. If signup fails, deploy `register` with Verify JWT off.
 4. Settings must show your email. It must **not** show a Supabase URL or key field.
 5. Create a collection while signed in, sign out (offline local workspace remains), sign back in: cloud data hydrates without wiping newer local edits.
 6. Sharing and RLS checks need a second user; see `docs/ACCEPTANCE.md`.

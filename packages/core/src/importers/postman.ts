@@ -398,11 +398,32 @@ export function importPostmanGlobals(json: unknown): ImportPreview {
   };
 }
 
+function mapPostmanUrl(raw: string, query: Array<{ key: string; value: string; disabled: boolean }>, pathVars: Array<{ key: string; value: string }>) {
+  const url: Record<string, unknown> = {
+    raw,
+    query: query.length ? query : undefined,
+    variable: pathVars.length ? pathVars : undefined
+  };
+  if (/\{\{|\}\}/.test(raw)) return url;
+  try {
+    const parsed = new URL(raw);
+    url.protocol = parsed.protocol.replace(":", "");
+    url.host = parsed.hostname.split(".");
+    if (parsed.port) url.port = parsed.port;
+    url.path = parsed.pathname.split("/").filter(Boolean);
+  } catch {
+    /* keep raw */
+  }
+  return url;
+}
+
 export function exportPostmanCollection(opts: {
   collection: Collection;
   folders: Folder[];
   requests: SavedRequest[];
   includeSecrets?: boolean;
+  rootFolderId?: string | null;
+  onlyRequestId?: string;
 }): Record<string, unknown> {
   const foldersByParent = new Map<string | null, Folder[]>();
   for (const folder of opts.folders.filter((f) => f.collectionId === opts.collection.id && !f.deletedAt)) {
@@ -440,7 +461,7 @@ export function exportPostmanCollection(opts: {
     const events: unknown[] = [];
     if (scripts.prerequest) events.push({ listen: "prerequest", script: { type: "text/javascript", exec: scripts.prerequest.split("\n") } });
     if (scripts.test) events.push({ listen: "test", script: { type: "text/javascript", exec: scripts.test.split("\n") } });
-    return events;
+    return events.length ? events : undefined;
   };
 
   const mapBody = (body: RequestBody) => {
@@ -479,12 +500,12 @@ export function exportPostmanCollection(opts: {
       name: req.name,
       request: {
         method: doc.method,
-        header: doc.headers.map((h) => ({ key: h.key, value: h.value, disabled: !h.enabled })),
-        url: {
-          raw: doc.url,
-          query: doc.query.map((q) => ({ key: q.key, value: q.value, disabled: !q.enabled })),
-          variable: doc.pathVariables.map((p) => ({ key: p.key, value: p.value }))
-        },
+        header: doc.headers.filter((h) => h.key).map((h) => ({ key: h.key, value: h.value, disabled: !h.enabled })),
+        url: mapPostmanUrl(
+          doc.url,
+          doc.query.map((q) => ({ key: q.key, value: q.value, disabled: !q.enabled })),
+          doc.pathVariables.map((p) => ({ key: p.key, value: p.value }))
+        ),
         body: mapBody(doc.body),
         auth: mapAuth(doc.auth),
         description: doc.description
@@ -516,16 +537,35 @@ export function exportPostmanCollection(opts: {
     return items;
   };
 
+  if (opts.onlyRequestId) {
+    const req = opts.requests.find((r) => r.id === opts.onlyRequestId && !r.deletedAt);
+    if (!req) throw new Error("Request not found");
+    return {
+      info: {
+        name: req.name,
+        schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+      },
+      item: [mapRequest(req)]
+    };
+  }
+
+  const rootFolderId = opts.rootFolderId ?? null;
+  const title = rootFolderId
+    ? (opts.folders.find((f) => f.id === rootFolderId)?.name ?? opts.collection.name)
+    : opts.collection.name;
+
   return {
     info: {
-      name: opts.collection.name,
-      description: opts.collection.description,
+      name: title,
+      description: rootFolderId ? undefined : opts.collection.description,
       schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
     },
-    item: buildItems(null),
-    variable: mapVars(opts.collection.variables),
-    auth: mapAuth(opts.collection.auth),
-    event: mapEvents(opts.collection.scripts)
+    item: buildItems(rootFolderId),
+    variable: rootFolderId ? undefined : mapVars(opts.collection.variables),
+    auth: rootFolderId ? mapAuth(opts.folders.find((f) => f.id === rootFolderId)?.auth ?? emptyAuth()) : mapAuth(opts.collection.auth),
+    event: rootFolderId
+      ? mapEvents(opts.folders.find((f) => f.id === rootFolderId)?.scripts ?? emptyScripts())
+      : mapEvents(opts.collection.scripts)
   };
 }
 

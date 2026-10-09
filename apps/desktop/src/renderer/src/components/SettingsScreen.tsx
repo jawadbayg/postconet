@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "../lib/ipc";
 import type { SessionInfo } from "../App";
 import { AuthScreen } from "../screens/AuthScreen";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { isCloudUser } from "../App";
 
 type Settings = {
   timeoutMs: number;
@@ -21,8 +23,9 @@ export function SettingsScreen(props: {
 }) {
   const [settings, setSettings] = useState<Settings>({ timeoutMs: 30000, followRedirects: true, tlsVerify: true, historyEnabled: true, theme: "light" });
   const [conflicts, setConflicts] = useState<unknown[]>([]);
-  const signedIn = Boolean(props.session.user && props.session.user.id !== "local");
+  const signedIn = isCloudUser(props.session.user);
   const [authMode, setAuthMode] = useState<"signin" | "signup" | null>(null);
+  const [confirmLogout, setConfirmLogout] = useState(false);
 
   useEffect(() => {
     void invoke<Settings>("settings.get").then(setSettings).catch(() => undefined);
@@ -36,6 +39,7 @@ export function SettingsScreen(props: {
 
   if (authMode && !signedIn) {
     return (
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <AuthScreen
         cloudConfigured={props.session.cloudConfigured}
         theme={props.theme}
@@ -44,6 +48,7 @@ export function SettingsScreen(props: {
         onAuthed={(user) => props.onSession({ ...props.session, user })}
         onContinueLocal={() => setAuthMode(null)}
       />
+      </div>
     );
   }
 
@@ -60,7 +65,7 @@ export function SettingsScreen(props: {
             <div className="mt-3 space-y-2 text-sm">
               <div>{props.session.user?.displayName || "Signed in"}</div>
               <div className="text-[var(--muted)]">{props.session.user?.email}</div>
-              <button className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs" onClick={props.onSignOut}>
+              <button className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs" onClick={() => setConfirmLogout(true)}>
                 Log out
               </button>
             </div>
@@ -146,6 +151,18 @@ export function SettingsScreen(props: {
           )}
         </section>
       </div>
+      {confirmLogout && (
+        <ConfirmDialog
+          title="Log out?"
+          body="You’ll stay in offline mode on this Mac. Sign in again when you want to sync."
+          confirmLabel="Log out"
+          onCancel={() => setConfirmLogout(false)}
+          onConfirm={() => {
+            setConfirmLogout(false);
+            props.onSignOut();
+          }}
+        />
+      )}
     </div>
   );
 }

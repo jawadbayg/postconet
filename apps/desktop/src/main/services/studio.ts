@@ -13,7 +13,8 @@ import {
   type Environment
 } from "@postconet/core";
 import { runtime } from "./state.js";
-import { dbPath } from "./session.js";
+import { existsSync } from "node:fs";
+import { dbPath, wipeAccountFiles } from "./session.js";
 
 export function openAccount(userId: string) {
   closeAccount();
@@ -32,6 +33,159 @@ export function closeAccount() {
   runtime.db = null;
   runtime.repo = null;
   runtime.accountId = "local";
+}
+
+export type LocalSnapshot = {
+  collections: Collection[];
+  folders: Folder[];
+  requests: SavedRequest[];
+  environments: Environment[];
+};
+
+export type LocalDataSummary = {
+  collections: number;
+  requests: number;
+  environments: number;
+};
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function snapshotFromRepo(repo: StudioRepo): LocalSnapshot {
+  const collections: Collection[] = [];
+  const folders: Folder[] = [];
+  const requests: SavedRequest[] = [];
+  const environments: Environment[] = [];
+  for (const ws of repo.listWorkspaces()) {
+    environments.push(...repo.listEnvironments(ws.id));
+    for (const col of repo.listCollections(ws.id)) {
+      collections.push(col);
+      folders.push(...repo.listFolders(col.id));
+      requests.push(...repo.listRequests(col.id));
+    }
+  }
+  return {
+    collections: clone(collections),
+    folders: clone(folders),
+    requests: clone(requests),
+    environments: clone(environments)
+  };
+}
+
+export function captureLocalSnapshot(): LocalSnapshot {
+  if (runtime.accountId === "local" && runtime.repo) return snapshotFromRepo(runtime.repo);
+  const path = dbPath("local");
+  if (!existsSync(path)) return { collections: [], folders: [], requests: [], environments: [] };
+  const db = openDatabase(path);
+  try {
+    return snapshotFromRepo(new StudioRepo(db, "local"));
+  } finally {
+    closeDatabase(db);
+  }
+}
+
+export function summarizeLocalSnapshot(snapshot: LocalSnapshot): LocalDataSummary {
+  return {
+    collections: snapshot.collections.length,
+    requests: snapshot.requests.length,
+    environments: snapshot.environments.length
+  };
+}
+
+export function localSnapshotHasData(snapshot: LocalSnapshot) {
+  return snapshot.collections.length > 0 || snapshot.requests.length > 0 || snapshot.environments.length > 0;
+}
+
+function sortedFolders(folders: Folder[]) {
+  const remaining = [...folders];
+  const out: Folder[] = [];
+  const placed = new Set<string>();
+  while (remaining.length) {
+    const ready = remaining.filter((folder) => !folder.parentId || placed.has(folder.parentId) || !folders.some((row) => row.id === folder.parentId));
+    if (!ready.length) {
+      out.push(...remaining);
+      break;
+    }
+    for (const folder of ready) {
+      placed.add(folder.id);
+      out.push(folder);
+    }
+    remaining.splice(0, remaining.length, ...remaining.filter((folder) => !placed.has(folder.id)));
+  }
+  return out;
+}
+
+export function importLocalSnapshot(snapshot: LocalSnapshot) {
+  const repo = mustRepo();
+  const workspace = repo.listWorkspaces()[0];
+  if (!workspace) return;
+  const now = nowIso();
+  const colMap = new Map<string, string>();
+  const folderMap = new Map<string, string>();
+  for (const col of snapshot.collections) {
+    const id = createId("col");
+    colMap.set(col.id, id);
+    repo.upsertCollection({
+      ...col,
+      id,
+      workspaceId: workspace.id,
+      version: 1,
+      updatedAt: now,
+      deletedAt: null
+    });
+  }
+  for (const folder of sortedFolders(snapshot.folders)) {
+    const id = createId("fld");
+    folderMap.set(folder.id, id);
+    const collectionId = colMap.get(folder.collectionId);
+    if (!collectionId) continue;
+    repo.upsertFolder({
+      ...folder,
+      id,
+      workspaceId: workspace.id,
+      collectionId,
+      parentId: folder.parentId ? folderMap.get(folder.parentId) ?? null : null,
+      version: 1,
+      updatedAt: now,
+      deletedAt: null
+    });
+  }
+  for (const req of snapshot.requests) {
+    const collectionId = colMap.get(req.collectionId);
+    if (!collectionId) continue;
+    repo.upsertRequest({
+      ...req,
+      id: createId("req"),
+      workspaceId: workspace.id,
+      collectionId,
+      folderId: req.folderId ? folderMap.get(req.folderId) ?? null : null,
+      version: 1,
+      updatedAt: now,
+      deletedAt: null
+    });
+  }
+  for (const env of snapshot.environments) {
+    repo.upsertEnvironment({
+      ...env,
+      id: createId("env"),
+      workspaceId: workspace.id,
+      version: 1,
+      updatedAt: now,
+      deletedAt: null
+    });
+  }
+}
+
+export function wipeClosedAccount(userId: string) {
+  if (!userId || userId === "local") return;
+  if (runtime.accountId === userId) closeAccount();
+  wipeAccountFiles(userId);
+}
+
+export function resetLocalAccountFiles() {
+  if (runtime.accountId === "local") closeAccount();
+  wipeAccountFiles("local");
 }
 
 function ensurePersonalWorkspace(userId: string) {

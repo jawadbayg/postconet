@@ -29,6 +29,76 @@ describe("Postman collection round trip", () => {
     expect((scriptsSurvive as { scripts: { test: string } }).scripts.test).toContain("pm.test");
   });
 
+  it("exports a folder or a single request as its own Postman collection", () => {
+    const preview = importPostmanCollection(fixture, "ws1");
+    const users = preview.folders.find((f) => f.name === "Users");
+    expect(users).toBeTruthy();
+    const folderJson = exportPostmanCollection({
+      collection: preview.collections[0]!,
+      folders: preview.folders,
+      requests: preview.requests,
+      rootFolderId: users!.id
+    }) as { info: { name: string; schema: string }; item: Array<{ name: string }> };
+    expect(folderJson.info.schema).toContain("v2.1.0");
+    expect(folderJson.info.name).toBe("Users");
+    expect(folderJson.item.map((i) => i.name).sort()).toEqual(["Create user", "List users"]);
+
+    const req = preview.requests.find((r) => r.name === "Create user");
+    expect(req).toBeTruthy();
+    const reqJson = exportPostmanCollection({
+      collection: preview.collections[0]!,
+      folders: preview.folders,
+      requests: preview.requests,
+      onlyRequestId: req!.id
+    }) as { info: { name: string }; item: Array<{ name: string; request: { method: string; body?: { raw: string } } }> };
+    expect(reqJson.info.name).toBe("Create user");
+    expect(reqJson.item).toHaveLength(1);
+    expect(reqJson.item[0]?.request.method).toBe("POST");
+    expect(reqJson.item[0]?.request.body?.raw).toContain("Ada");
+  });
+
+  it("splits concrete URLs into host, port, and path like Postman", () => {
+    const src = {
+      info: { name: "bot", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+      item: [
+        {
+          name: "First Job - run",
+          request: {
+            method: "POST",
+            header: [{ key: "Content-Type", value: "application/json" }],
+            body: {
+              mode: "raw",
+              raw: '{"categories":["Pet Supplies"]}',
+              options: { raw: { language: "json" } }
+            },
+            url: "http://127.0.0.1:5000/api/bot/run"
+          }
+        }
+      ]
+    };
+    const preview = importPostmanCollection(src, "ws1");
+    const exported = exportPostmanCollection({
+      collection: preview.collections[0]!,
+      folders: preview.folders,
+      requests: preview.requests
+    }) as {
+      item: Array<{
+        request: {
+          method: string;
+          url: { raw: string; protocol: string; host: string[]; port: string; path: string[] };
+          body: { raw: string };
+        };
+      }>;
+    };
+    const url = exported.item[0]?.request.url;
+    expect(exported.item[0]?.request.method).toBe("POST");
+    expect(url?.protocol).toBe("http");
+    expect(url?.host).toEqual(["127", "0", "0", "1"]);
+    expect(url?.port).toBe("5000");
+    expect(url?.path).toEqual(["api", "bot", "run"]);
+    expect(exported.item[0]?.request.body.raw).toContain("Pet Supplies");
+  });
+
   it("does not treat missing file bodies as imported content", () => {
     const src = {
       info: { name: "files", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },

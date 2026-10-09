@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain, shell, dialog } from "electron";
+import { writeFile } from "node:fs/promises";
 import { z } from "zod";
 import {
   executeHttp,
@@ -34,6 +35,7 @@ import {
 } from "../services/studio.js";
 import {
   signIn,
+  completeSignIn,
   signUp,
   signOut,
   resetPassword,
@@ -64,36 +66,53 @@ async function handle<T>(fn: () => Promise<T> | T) {
   try {
     return ok(await fn());
   } catch (error) {
-    return fail(error instanceof Error ? error.message : String(error));
+    const message =
+      error instanceof Error
+        ? error.message
+        : error && typeof error === "object" && "message" in error && typeof (error as { message: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : String(error ?? "Unknown error");
+    return fail(message);
   }
 }
 
-export function registerIpc() {
-  ipcMain.handle("app.brand", () => handle(async () => (await import("@postconet/core")).brand));
-  ipcMain.handle("app.cloudConfigured", () => ok(isCloudConfigured()));
+function bindIpc(channel: string, listener: Parameters<typeof ipcMain.handle>[1]) {
+  ipcMain.removeHandler(channel);
+  ipcMain.handle(channel, listener);
+}
 
-  ipcMain.handle("auth.session", () => ok(statusPayload()));
-  ipcMain.handle("auth.signUp", (_e, raw) =>
+export function registerIpc() {
+  bindIpc("app.brand", () => handle(async () => (await import("@postconet/core")).brand));
+  bindIpc("app.cloudConfigured", () => ok(isCloudConfigured()));
+
+  bindIpc("auth.session", () => ok(statusPayload()));
+  bindIpc("auth.signUp", (_e, raw) =>
     handle(async () => {
       const input = signUpSchema.parse(raw);
       return signUp(input.email, input.password, input.displayName);
     })
   );
-  ipcMain.handle("auth.signIn", (_e, raw) =>
+  bindIpc("auth.signIn", (_e, raw) =>
     handle(async () => {
       const input = signInSchema.parse(raw);
       return signIn(input.email, input.password);
     })
   );
-  ipcMain.handle("auth.signOut", () => handle(() => signOut()));
-  ipcMain.handle("auth.resetPassword", (_e, raw) =>
+  bindIpc("auth.completeSignIn", (_e, raw) =>
+    handle(async () => {
+      const { mergeLocal } = z.object({ mergeLocal: z.boolean() }).parse(raw);
+      return completeSignIn(mergeLocal);
+    })
+  );
+  bindIpc("auth.signOut", () => handle(() => signOut()));
+  bindIpc("auth.resetPassword", (_e, raw) =>
     handle(async () => {
       const { email } = z.object({ email: z.string().email() }).parse(raw);
       await resetPassword(email);
       return { sent: true };
     })
   );
-  ipcMain.handle("auth.updatePassword", (_e, raw) =>
+  bindIpc("auth.updatePassword", (_e, raw) =>
     handle(async () => {
       const { password } = z.object({ password: z.string().min(8) }).parse(raw);
       await updatePassword(password);
@@ -101,38 +120,38 @@ export function registerIpc() {
     })
   );
 
-  ipcMain.handle("workspace.list", () => handle(() => mustRepo().listWorkspaces()));
-  ipcMain.handle("workspace.tree", (_e, raw) =>
+  bindIpc("workspace.list", () => handle(() => mustRepo().listWorkspaces()));
+  bindIpc("workspace.tree", (_e, raw) =>
     handle(() => {
       const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
       return tree(workspaceId);
     })
   );
-  ipcMain.handle("workspace.createCollection", (_e, raw) =>
+  bindIpc("workspace.createCollection", (_e, raw) =>
     handle(() => {
       const { workspaceId, name } = z.object({ workspaceId: z.string(), name: z.string().min(1) }).parse(raw);
       return createCollection(workspaceId, name);
     })
   );
-  ipcMain.handle("workspace.createFolder", (_e, raw) =>
+  bindIpc("workspace.createFolder", (_e, raw) =>
     handle(() => {
       const p = z.object({ workspaceId: z.string(), collectionId: z.string(), parentId: z.string().nullable(), name: z.string() }).parse(raw);
       return createFolder(p.workspaceId, p.collectionId, p.parentId, p.name);
     })
   );
-  ipcMain.handle("workspace.createRequest", (_e, raw) =>
+  bindIpc("workspace.createRequest", (_e, raw) =>
     handle(() => {
       const p = z.object({ workspaceId: z.string(), collectionId: z.string(), folderId: z.string().nullable(), name: z.string() }).parse(raw);
       return createRequest(p);
     })
   );
-  ipcMain.handle("workspace.createEnvironment", (_e, raw) =>
+  bindIpc("workspace.createEnvironment", (_e, raw) =>
     handle(() => {
       const p = z.object({ workspaceId: z.string(), name: z.string() }).parse(raw);
       return createEnvironment(p.workspaceId, p.name);
     })
   );
-  ipcMain.handle("workspace.saveRequest", (_e, raw) =>
+  bindIpc("workspace.saveRequest", (_e, raw) =>
     handle(async () => {
       const body = (raw ?? {}) as SavedRequest & {
         request?: SavedRequest;
@@ -158,7 +177,7 @@ export function registerIpc() {
       return result;
     })
   );
-  ipcMain.handle("workspace.saveEnvironment", (_e, raw) =>
+  bindIpc("workspace.saveEnvironment", (_e, raw) =>
     handle(async () => {
       const env = raw as Environment;
       const saved = await saveEnvironmentDocument(env);
@@ -166,32 +185,32 @@ export function registerIpc() {
       return saved;
     })
   );
-  ipcMain.handle("workspace.rename", (_e, raw) =>
+  bindIpc("workspace.rename", (_e, raw) =>
     handle(() => {
       const p = z.object({ type: z.enum(["collection", "folder", "request", "environment"]), id: z.string(), name: z.string() }).parse(raw);
       return renameEntity(p.type, p.id, p.name);
     })
   );
-  ipcMain.handle("workspace.delete", (_e, raw) =>
+  bindIpc("workspace.delete", (_e, raw) =>
     handle(() => {
       const p = z.object({ type: z.enum(["collection", "folder", "request", "environment"]), id: z.string() }).parse(raw);
       return deleteEntity(p.type, p.id);
     })
   );
-  ipcMain.handle("workspace.moveFolder", (_e, raw) =>
+  bindIpc("workspace.moveFolder", (_e, raw) =>
     handle(() => {
       const p = z.object({ folderId: z.string(), collectionId: z.string(), parentId: z.string().nullable() }).parse(raw);
       return moveFolder(p.folderId, p.collectionId, p.parentId);
     })
   );
-  ipcMain.handle("workspace.moveRequest", (_e, raw) =>
+  bindIpc("workspace.moveRequest", (_e, raw) =>
     handle(() => {
       const p = z.object({ requestId: z.string(), collectionId: z.string(), folderId: z.string().nullable() }).parse(raw);
       return moveRequest(p.requestId, p.collectionId, p.folderId);
     })
   );
 
-  ipcMain.handle("share.invite", (_e, raw) =>
+  bindIpc("share.invite", (_e, raw) =>
     handle(() =>
       inviteShare(
         z
@@ -206,7 +225,7 @@ export function registerIpc() {
       )
     )
   );
-  ipcMain.handle("share.list", (_e, raw) =>
+  bindIpc("share.list", (_e, raw) =>
     handle(() =>
       listShares(
         z
@@ -219,12 +238,12 @@ export function registerIpc() {
       )
     )
   );
-  ipcMain.handle("share.manage", (_e, raw) => handle(() => manageShare(z.record(z.unknown()).parse(raw))));
-  ipcMain.handle("share.acceptPending", (_e, raw) =>
+  bindIpc("share.manage", (_e, raw) => handle(() => manageShare(z.record(z.unknown()).parse(raw))));
+  bindIpc("share.acceptPending", (_e, raw) =>
     handle(() => acceptPendingInvites(z.object({ token: z.string().optional() }).parse(raw ?? {}).token))
   );
-  ipcMain.handle("notifications.list", () => handle(() => listNotifications()));
-  ipcMain.handle("notifications.read", (_e, raw) =>
+  bindIpc("notifications.list", () => handle(() => listNotifications()));
+  bindIpc("notifications.read", (_e, raw) =>
     handle(async () => {
       const { id } = z.object({ id: z.string() }).parse(raw);
       await markNotificationRead(id);
@@ -232,13 +251,13 @@ export function registerIpc() {
     })
   );
 
-  ipcMain.handle("settings.get", () =>
+  bindIpc("settings.get", () =>
     handle(() => {
       const raw = mustRepo().getMeta("ui_settings");
       return { ...defaultSettings(), ...(raw ? JSON.parse(raw) : {}) };
     })
   );
-  ipcMain.handle("settings.set", (_e, raw) =>
+  bindIpc("settings.set", (_e, raw) =>
     handle(() => {
       const prev = mustRepo().getMeta("ui_settings");
       const next = { ...defaultSettings(), ...(prev ? JSON.parse(prev) : {}), ...(raw as object) };
@@ -246,21 +265,21 @@ export function registerIpc() {
       return next;
     })
   );
-  ipcMain.handle("history.clear", (_e, raw) =>
+  bindIpc("history.clear", (_e, raw) =>
     handle(() => {
       const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
       mustRepo().clearHistory(workspaceId);
       return true;
     })
   );
-  ipcMain.handle("sync.conflicts", (_e, raw) =>
+  bindIpc("sync.conflicts", (_e, raw) =>
     handle(() => {
       const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
       return mustRepo().listConflicts(workspaceId);
     })
   );
 
-  ipcMain.handle("request.send", (_e, raw) =>
+  bindIpc("request.send", (_e, raw) =>
     handle(async () => {
       const p = z
         .object({
@@ -313,7 +332,7 @@ export function registerIpc() {
       };
     })
   );
-  ipcMain.handle("request.cancel", (_e, raw) =>
+  bindIpc("request.cancel", (_e, raw) =>
     handle(() => {
       const { executionId } = z.object({ executionId: z.string() }).parse(raw);
       runtime.abort.get(executionId)?.abort();
@@ -321,39 +340,39 @@ export function registerIpc() {
     })
   );
 
-  ipcMain.handle("history.list", (_e, raw) =>
+  bindIpc("history.list", (_e, raw) =>
     handle(() => {
       const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
       return mustRepo().listHistory(workspaceId);
     })
   );
-  ipcMain.handle("cookies.list", (_e, raw) =>
+  bindIpc("cookies.list", (_e, raw) =>
     handle(async () => {
       const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
       return listCookies(mustRepo().getCookieJar(workspaceId));
     })
   );
-  ipcMain.handle("search.query", (_e, raw) =>
+  bindIpc("search.query", (_e, raw) =>
     handle(() => {
       const { q } = z.object({ q: z.string() }).parse(raw);
       return mustRepo().search(q);
     })
   );
-  ipcMain.handle("layout.save", (_e, raw) =>
+  bindIpc("layout.save", (_e, raw) =>
     handle(() => {
       mustRepo().saveTabs(raw);
       return true;
     })
   );
-  ipcMain.handle("layout.load", () => handle(() => mustRepo().loadTabs()));
+  bindIpc("layout.load", () => handle(() => mustRepo().loadTabs()));
 
-  ipcMain.handle("import.preview", (_e, raw) =>
+  bindIpc("import.preview", (_e, raw) =>
     handle(() => {
       const { text, workspaceId } = z.object({ text: z.string(), workspaceId: z.string() }).parse(raw);
       return detectAndImport(text, workspaceId);
     })
   );
-  ipcMain.handle("import.commit", (_e, raw) =>
+  bindIpc("import.commit", (_e, raw) =>
     handle(() => {
       const preview = raw as ReturnType<typeof detectAndImport>;
       const repo = mustRepo();
@@ -370,24 +389,33 @@ export function registerIpc() {
       return { imported: true, issues: preview.issues, missingFiles: preview.missingFiles };
     })
   );
-  ipcMain.handle("export.collection", (_e, raw) =>
+  bindIpc("export.collection", (_e, raw) =>
     handle(() => {
       const { collectionId, includeSecrets } = z.object({ collectionId: z.string(), includeSecrets: z.boolean().optional() }).parse(raw);
-      const repo = mustRepo();
-      const collections = repo.listWorkspaces().flatMap((w) => repo.listCollections(w.id));
-      const collection = collections.find((c) => c.id === collectionId);
-      if (!collection) throw new Error("Collection not found");
-      return exportPostmanCollection({
-        collection,
-        folders: repo.listFolders(collection.id),
-        requests: repo.listRequests(collection.id),
-        includeSecrets: includeSecrets ?? false
-      });
+      return buildPostmanExport("collection", collectionId, includeSecrets ?? false).json;
     })
   );
-  ipcMain.handle("export.curl", (_e, raw) => handle(() => exportCurl(raw as HttpRequestDocument)));
-  ipcMain.handle("export.snippets", (_e, raw) => handle(() => generateSnippets(raw as HttpRequestDocument)));
-  ipcMain.handle("export.environment", (_e, raw) =>
+  bindIpc("export.download", (_e, raw) =>
+    handle(async () => {
+      const { kind, id } = z
+        .object({ kind: z.enum(["collection", "folder", "request"]), id: z.string() })
+        .parse(raw);
+      const { title, json } = buildPostmanExport(kind, id);
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      const options = {
+        title: "Export Postman Collection",
+        defaultPath: `${sanitizeExportName(title)}.postman_collection.json`,
+        filters: [{ name: "Postman Collection", extensions: ["json"] }]
+      };
+      const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return { saved: false as const };
+      await writeFile(result.filePath, `${JSON.stringify(json, null, 2)}\n`, "utf8");
+      return { saved: true as const, path: result.filePath };
+    })
+  );
+  bindIpc("export.curl", (_e, raw) => handle(() => exportCurl(raw as HttpRequestDocument)));
+  bindIpc("export.snippets", (_e, raw) => handle(() => generateSnippets(raw as HttpRequestDocument)));
+  bindIpc("export.environment", (_e, raw) =>
     handle(() => {
       const env = raw as { id: string };
       const found = mustRepo().listWorkspaces().flatMap((w) => mustRepo().listEnvironments(w.id)).find((e) => e.id === env.id);
@@ -396,29 +424,29 @@ export function registerIpc() {
     })
   );
 
-  ipcMain.handle("conn.open", (_e, raw) => handle(() => openConnection(raw)));
-  ipcMain.handle("conn.send", (_e, raw) =>
+  bindIpc("conn.open", (_e, raw) => handle(() => openConnection(raw)));
+  bindIpc("conn.send", (_e, raw) =>
     handle(() => {
       const p = z.object({ id: z.string(), data: z.string(), topic: z.string().optional(), event: z.string().optional() }).parse(raw);
       return sendConnection(p.id, p.data, { topic: p.topic, event: p.event });
     })
   );
-  ipcMain.handle("conn.close", (_e, raw) =>
+  bindIpc("conn.close", (_e, raw) =>
     handle(() => {
       const { id } = z.object({ id: z.string() }).parse(raw);
       return closeConnection(id);
     })
   );
 
-  ipcMain.handle("oauth.authorize", (_e, raw) => handle(() => authorizeInSystemBrowser(raw)));
+  bindIpc("oauth.authorize", (_e, raw) => handle(() => authorizeInSystemBrowser(raw)));
 
-  ipcMain.handle("mcp.http", (_e, raw) =>
+  bindIpc("mcp.http", (_e, raw) =>
     handle(async () => {
       const { url } = z.object({ url: z.string().url() }).parse(raw);
       return mcpInitializeHttp(url);
     })
   );
-  ipcMain.handle("mcp.stdio", (_e, raw) =>
+  bindIpc("mcp.stdio", (_e, raw) =>
     handle(() => {
       const p = z.object({ command: z.string(), args: z.array(z.string()), trusted: z.literal(true) }).parse(raw);
       const child = mcpStartStdio(p);
@@ -427,15 +455,15 @@ export function registerIpc() {
     })
   );
 
-  ipcMain.handle("sync.status", () => ok(statusPayload()));
-  ipcMain.handle("sync.now", () =>
+  bindIpc("sync.status", () => ok(statusPayload()));
+  bindIpc("sync.now", () =>
     handle(async () => {
       await flushSync();
       return statusPayload();
     })
   );
 
-  ipcMain.handle("dialog.openFile", async () => {
+  bindIpc("dialog.openFile", async () => {
     const win = BrowserWindow.getFocusedWindow();
     const res = await dialog.showOpenDialog(win!, { properties: ["openFile"] });
     if (res.canceled || !res.filePaths[0]) return ok(null);
@@ -443,7 +471,7 @@ export function registerIpc() {
     const buf = await readFile(res.filePaths[0]);
     return ok({ path: res.filePaths[0], text: buf.toString("utf8") });
   });
-  ipcMain.handle("shell.openExternal", (_e, raw) =>
+  bindIpc("shell.openExternal", (_e, raw) =>
     handle(async () => {
       const { url } = z.object({ url: z.string().url() }).parse(raw);
       if (!/^https?:/.test(url)) throw new Error("Blocked URL");
@@ -451,6 +479,62 @@ export function registerIpc() {
       return true;
     })
   );
+}
+
+function sanitizeExportName(name: string) {
+  const cleaned = name
+    .replace(/[<>:"/\\|?*]/g, " ")
+    .replace(/[\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "collection";
+}
+
+function buildPostmanExport(kind: "collection" | "folder" | "request", id: string, includeSecrets = false) {
+  const repo = mustRepo();
+  if (kind === "collection") {
+    const collection = repo.getCollection(id);
+    if (!collection || collection.deletedAt) throw new Error("Collection not found");
+    return {
+      title: collection.name,
+      json: exportPostmanCollection({
+        collection,
+        folders: repo.listFolders(collection.id),
+        requests: repo.listRequests(collection.id),
+        includeSecrets
+      })
+    };
+  }
+  if (kind === "folder") {
+    const folder = repo.getFolder(id);
+    if (!folder || folder.deletedAt) throw new Error("Folder not found");
+    const collection = repo.getCollection(folder.collectionId);
+    if (!collection || collection.deletedAt) throw new Error("Collection not found");
+    return {
+      title: folder.name,
+      json: exportPostmanCollection({
+        collection,
+        folders: repo.listFolders(collection.id),
+        requests: repo.listRequests(collection.id),
+        includeSecrets,
+        rootFolderId: folder.id
+      })
+    };
+  }
+  const request = repo.getRequest(id);
+  if (!request || request.deletedAt) throw new Error("Request not found");
+  const collection = repo.getCollection(request.collectionId);
+  if (!collection || collection.deletedAt) throw new Error("Collection not found");
+  return {
+    title: request.name,
+    json: exportPostmanCollection({
+      collection,
+      folders: repo.listFolders(collection.id),
+      requests: repo.listRequests(collection.id),
+      includeSecrets,
+      onlyRequestId: request.id
+    })
+  };
 }
 
 function defaultSettings() {

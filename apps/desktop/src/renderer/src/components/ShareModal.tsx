@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "../lib/ipc";
+import { DispatchLoaderOverlay } from "./DispatchLoader";
 
 type ShareTarget = { kind: "collection" | "folder" | "request"; id: string; name: string; workspaceId: string };
 
@@ -41,9 +42,8 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
         role
       });
       setEmail("");
-      if (res.mode === "direct") setMessage("Access granted. They’ll see an in-app notification.");
-      else if (res.email?.sent === false) setMessage("Invitation saved, but the email was not sent. Add RESEND_API_KEY to Edge Function secrets.");
-      else setMessage("Invitation email sent. They can accept after verifying that address.");
+      if (res.mode === "direct") setMessage("Access granted. They’ll see an in-app notification — no email is sent.");
+      else setMessage("Access updated.");
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -54,7 +54,8 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-      <div className="w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-lg">
+      <div className="relative w-full max-w-md overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-lg">
+        {busy && <DispatchLoaderOverlay size={120} />}
         <div className="flex items-center justify-between">
           <div>
             <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Share {props.target.kind}</div>
@@ -68,12 +69,12 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
           <p className="mt-4 text-sm text-[var(--muted)]">Sign in to share with another email address.</p>
         ) : (
           <>
-            <p className="mt-3 text-xs text-[var(--muted)]">Viewer can inspect. Editor can change this item. Private credentials are not shared.</p>
+            <p className="mt-3 text-xs text-[var(--muted)]">Enter an email that already has a PostConet account. If they exist, they get an in-app notification — no email is sent. Viewer can inspect. Editor can change this item. Private credentials are not shared.</p>
             <div className="mt-3 flex gap-2">
               <input
                 type="email"
                 className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1.5 text-sm"
-                placeholder="name@gmail.com"
+                placeholder="teammate@postconet.local"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />

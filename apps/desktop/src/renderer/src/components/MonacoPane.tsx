@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { POSTCONET_THEME_DARK, POSTCONET_THEME_LIGHT } from "../monaco";
+import { DispatchLoaderFill } from "./DispatchLoader";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 
@@ -51,7 +52,7 @@ export default function MonacoPane(props: MonacoPaneProps) {
         value={props.value}
         onMount={onMount}
         onChange={(value) => props.onChange?.(value ?? "")}
-        loading={<div className="p-3 text-xs text-[#667085]">Loading editor…</div>}
+        loading={<DispatchLoaderFill size={100} />}
         options={{
           readOnly: props.readOnly,
           minimap: { enabled: false },

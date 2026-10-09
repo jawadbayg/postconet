@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import type { Tree, RequestRecord } from "../screens/Studio";
+import { DispatchLoaderFill } from "./DispatchLoader";
 
-export type SidebarAction = "rename" | "delete" | "share";
+export type SidebarAction = "rename" | "delete" | "share" | "export";
 
 export type DragItem = { kind: "request"; id: string; collectionId: string };
 export type DropTarget =
@@ -25,20 +26,9 @@ export function Sidebar(props: {
   onAction: (action: SidebarAction, target: MenuTarget) => void;
   onDrop: (item: DragItem, target: DropTarget) => void;
 }) {
-  const [query, setQuery] = useState("");
-  if (!props.tree) return <div className="p-3 text-xs text-[#667085]">Loading collections…</div>;
-  const q = query.trim().toLowerCase();
-  const collections = q ? props.tree.collections.filter((col) => collectionMatches(col, q)) : props.tree.collections;
+  if (!props.tree) return <DispatchLoaderFill size={120} />;
   return (
     <div className="flex h-full flex-col bg-[var(--panel)]">
-      <div className="border-b border-[var(--border)] px-2 py-2">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search"
-          className="w-full rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs outline-none"
-        />
-      </div>
       <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2">
         <span className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Collections</span>
         <button className="text-xs text-[var(--accent)]" onClick={props.onNewCollection}>
@@ -49,15 +39,10 @@ export function Sidebar(props: {
         {props.tree.collections.length === 0 && (
           <div className="px-2 py-6 text-xs text-[var(--muted)]">Create a collection to save requests.</div>
         )}
-        {props.tree.collections.length > 0 && collections.length === 0 && (
-          <div className="px-2 py-6 text-xs text-[var(--muted)]">No matches</div>
-        )}
-        {collections.map((col) => (
+        {props.tree.collections.map((col) => (
           <CollectionBlock
             key={col.id}
             col={col}
-            query={q}
-            revealAll={!q || col.name.toLowerCase().includes(q)}
             activeId={props.activeId}
             focus={props.focus}
             onOpen={props.onOpen}
@@ -74,8 +59,6 @@ export function Sidebar(props: {
 
 function CollectionBlock(props: {
   col: Tree["collections"][number];
-  query: string;
-  revealAll: boolean;
   activeId: string | null;
   focus?: SidebarFocus | null;
   onOpen: (req: RequestRecord) => void;
@@ -87,8 +70,7 @@ function CollectionBlock(props: {
   const [open, setOpen] = useState(false);
   const col = props.col;
   const rowRef = useRef<HTMLDivElement>(null);
-  const filtering = props.query.length > 0;
-  const expanded = filtering || open;
+  const expanded = open;
   const highlighted = props.focus?.highlightId === col.id;
   useEffect(() => {
     if (props.focus?.collectionId === col.id) setOpen(true);
@@ -134,7 +116,7 @@ function CollectionBlock(props: {
       {expanded && (
         <>
           {col.folders
-            .filter((f) => !f.parentId && (props.revealAll || folderBranchMatches(f, col.folders, col.requests, props.query)))
+            .filter((f) => !f.parentId)
             .map((folder) => (
               <FolderBlock
                 key={folder.id}
@@ -143,8 +125,6 @@ function CollectionBlock(props: {
                 folders={col.folders}
                 requests={col.requests}
                 depth={1}
-                query={props.query}
-                revealAll={props.revealAll || folder.name.toLowerCase().includes(props.query)}
                 activeId={props.activeId}
                 focus={props.focus}
                 onOpen={props.onOpen}
@@ -155,7 +135,7 @@ function CollectionBlock(props: {
               />
             ))}
           {col.requests
-            .filter((r) => !r.folderId && (props.revealAll || requestMatches(r, props.query)))
+            .filter((r) => !r.folderId)
             .map((req) => (
               <RequestRow
                 key={req.id}
@@ -180,8 +160,6 @@ function FolderBlock(props: {
   folders: Tree["collections"][number]["folders"];
   requests: RequestRecord[];
   depth: number;
-  query: string;
-  revealAll: boolean;
   activeId: string | null;
   focus?: SidebarFocus | null;
   onOpen: (req: RequestRecord) => void;
@@ -191,8 +169,7 @@ function FolderBlock(props: {
   onDrop: (item: DragItem, target: DropTarget) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const filtering = props.query.length > 0;
-  const expanded = filtering || open;
+  const expanded = open;
   const highlighted = props.focus?.highlightId === props.folder.id;
   const rowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -243,18 +220,17 @@ function FolderBlock(props: {
       {expanded && (
         <>
           {props.folders
-            .filter((f) => f.parentId === props.folder.id && (props.revealAll || folderBranchMatches(f, props.folders, props.requests, props.query)))
+            .filter((f) => f.parentId === props.folder.id)
             .map((child) => (
               <FolderBlock
                 key={child.id}
                 {...props}
                 folder={child}
                 depth={props.depth + 1}
-                revealAll={props.revealAll || child.name.toLowerCase().includes(props.query)}
               />
             ))}
           {props.requests
-            .filter((r) => r.folderId === props.folder.id && (props.revealAll || requestMatches(r, props.query)))
+            .filter((r) => r.folderId === props.folder.id)
             .map((req) => (
               <RequestRow
                 key={req.id}
@@ -421,42 +397,18 @@ function ItemMenu(props: {
         ⋯
       </button>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-40 rounded-md border border-[var(--border)] bg-[var(--panel)] py-1 text-xs shadow-lg">
+        <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-[var(--border)] bg-[var(--panel)] py-1 text-xs shadow-lg">
           {props.extras?.map((extra) => (
             <MenuItem key={extra.label} label={extra.label} onClick={() => (setOpen(false), extra.onClick())} />
           ))}
           <MenuItem label="Rename" onClick={() => (setOpen(false), props.onAction("rename"))} />
+          <MenuItem label="Export JSON" onClick={() => (setOpen(false), props.onAction("export"))} />
           {props.share && <MenuItem label="Share / access" onClick={() => (setOpen(false), props.onAction("share"))} />}
           <MenuItem label="Delete" danger onClick={() => (setOpen(false), props.onAction("delete"))} />
         </div>
       )}
     </div>
   );
-}
-
-function requestMatches(req: RequestRecord, q: string) {
-  if (!q) return true;
-  const doc = req.document as { url?: string; method?: string };
-  const method = String(doc.method ?? req.protocol ?? "");
-  return [req.name, method, doc.url ?? ""].some((part) => part.toLowerCase().includes(q));
-}
-
-function folderBranchMatches(
-  folder: { id: string; name: string; parentId: string | null },
-  folders: Array<{ id: string; name: string; parentId: string | null }>,
-  requests: RequestRecord[],
-  q: string
-): boolean {
-  if (!q) return true;
-  if (folder.name.toLowerCase().includes(q)) return true;
-  if (requests.some((r) => r.folderId === folder.id && requestMatches(r, q))) return true;
-  return folders.some((child) => child.parentId === folder.id && folderBranchMatches(child, folders, requests, q));
-}
-
-function collectionMatches(col: Tree["collections"][number], q: string) {
-  if (col.name.toLowerCase().includes(q)) return true;
-  if (col.requests.some((r) => requestMatches(r, q))) return true;
-  return col.folders.some((f) => folderBranchMatches(f, col.folders, col.requests, q));
 }
 
 function folderContains(folders: Array<{ id: string; parentId: string | null }>, ancestorId: string, folderId: string) {

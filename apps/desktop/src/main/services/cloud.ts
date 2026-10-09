@@ -1,8 +1,21 @@
-import { createClient, type Session } from "@supabase/supabase-js";
+import { createClient, type Session, type User } from "@supabase/supabase-js";
 import { supabaseAnonKey, supabaseUrl, isCloudConfigured } from "../config.js";
 import { runtime } from "./state.js";
 import { saveSession, clearSession, loadSession } from "./session.js";
-import { closeAccount, openAccount, mustRepo, ensureWorkspaceIfEmpty } from "./studio.js";
+import {
+  closeAccount,
+  openAccount,
+  mustRepo,
+  ensureWorkspaceIfEmpty,
+  captureLocalSnapshot,
+  summarizeLocalSnapshot,
+  localSnapshotHasData,
+  importLocalSnapshot,
+  wipeClosedAccount,
+  resetLocalAccountFiles,
+  type LocalSnapshot,
+  type LocalDataSummary
+} from "./studio.js";
 import { summarizeState, type ChangeLogRow } from "@postconet/core";
 import { app, BrowserWindow, net, powerMonitor } from "electron";
 
@@ -159,16 +172,63 @@ export function publicUser() {
 }
 
 export async function signUp(email: string, password: string, displayName: string) {
-  if (!runtime.supabase && isCloudConfigured()) runtime.supabase = createAuthedClient();
-  if (!runtime.supabase) throw new Error("Cloud is not configured for this build. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
-  const { data, error } = await runtime.supabase.auth.signUp({
-    email,
-    password,
-    options: { data: { display_name: displayName }, emailRedirectTo: "postconet://auth/callback" }
+  if (!isCloudConfigured()) {
+    throw new Error("Cloud is not configured for this build. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+  }
+  if (!runtime.supabase) runtime.supabase = createAuthedClient();
+  const res = await fetch(`${supabaseUrl().replace(/\/$/, "")}/functions/v1/register`, {
+    method: "POST",
+    headers: {
+      apikey: supabaseAnonKey(),
+      Authorization: `Bearer ${supabaseAnonKey()}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ email: email.trim().toLowerCase(), password, displayName })
   });
-  if (error) throw error;
-  return { needsVerification: !data.session, user: data.user ? { id: data.user.id, email: data.user.email } : null };
+  type RegisterPayload = { error?: string; message?: string; user?: { id: string; email?: string } };
+  let payload: RegisterPayload | null = null;
+  const raw = await res.text();
+  try {
+    payload = raw ? (JSON.parse(raw) as RegisterPayload) : null;
+  } catch {
+    throw new Error(raw.slice(0, 180) || `Could not create the account (${res.status}).`);
+  }
+  const code = payload?.error || payload?.message || "";
+  if (code === "email_taken" || res.status === 409) {
+    throw new Error("That email already has an account. Sign in instead.");
+  }
+  if (code === "password_invalid" || code === "password_too_short") {
+    throw new Error("Use at least 6 characters, including a letter and a number.");
+  }
+  if (!res.ok || !payload?.user) {
+    throw new Error(code || `Could not create the account (${res.status}). Deploy the register function with Verify JWT off.`);
+  }
+  return { needsVerification: false, user: payload.user };
 }
+
+async function functionInvokeDetail(error: unknown): Promise<string> {
+  const err = error as { message?: string; context?: Response } | null;
+  const fallback = err?.message || "Sync request failed";
+  try {
+    const res = err?.context;
+    if (!res) return fallback;
+    const body = await res.clone().text();
+    if (!body) return `${fallback} (${res.status})`;
+    try {
+      const parsed = JSON.parse(body) as { error?: string; message?: string };
+      const reason = parsed.error || parsed.message;
+      if (reason) return reason;
+    } catch {
+      return body.slice(0, 180);
+    }
+    return `${fallback} (${res.status})`;
+  } catch {
+    return fallback;
+  }
+}
+
+let pendingLocalSnapshot: LocalSnapshot | null = null;
+let pendingUser: User | null = null;
 
 export async function signIn(email: string, password: string) {
   if (!runtime.supabase && isCloudConfigured()) runtime.supabase = createAuthedClient();
@@ -177,34 +237,70 @@ export async function signIn(email: string, password: string) {
   if (error) throw error;
   if (!data.session || !data.user) throw new Error("Sign-in did not return a session");
   saveSession(data.session);
-  runtime.user = data.user;
+  pendingUser = data.user;
+  const snapshot = captureLocalSnapshot();
+  pendingLocalSnapshot = snapshot;
+  const localData = summarizeLocalSnapshot(snapshot);
+  if (localSnapshotHasData(snapshot)) {
+    return {
+      user: { id: data.user.id, email: data.user.email ?? "", displayName: (data.user.user_metadata?.display_name as string) ?? "" },
+      pending: true,
+      localData
+    };
+  }
+  await completeSignIn(false);
+  return { user: publicUser(), pending: false, localData: null as LocalDataSummary | null };
+}
+
+export async function completeSignIn(mergeLocal: boolean) {
+  const user = pendingUser ?? runtime.user;
+  if (!user) throw new Error("Sign in first.");
+  const snapshot = pendingLocalSnapshot;
+  pendingLocalSnapshot = null;
+  pendingUser = null;
+  runtime.user = user;
   closeAccount();
-  openAccount(data.user.id);
+  openAccount(user.id);
   await hydrateFromCloud();
-  ensureWorkspaceIfEmpty(data.user.id);
+  ensureWorkspaceIfEmpty(user.id);
+  if (mergeLocal && snapshot && localSnapshotHasData(snapshot)) {
+    importLocalSnapshot(snapshot);
+    await flushSync();
+    resetLocalAccountFiles();
+    if (!runtime.repo) openAccount(user.id);
+  }
   await acceptPendingInvites();
   subscribeRealtime();
+  emit("sync.status", statusPayload());
   return publicUser();
 }
 
 export async function signOut() {
+  const accountId = runtime.user?.id;
   if (realtimeChannel && runtime.supabase) {
     await runtime.supabase.removeChannel(realtimeChannel);
   }
   realtimeChannel = null;
   subscribed = false;
+  pendingLocalSnapshot = null;
+  pendingUser = null;
   await runtime.supabase?.auth.signOut();
   clearSession();
   runtime.user = null;
+  runtime.sync = "offline";
+  runtime.syncError = null;
+  runtime.lastHydration = null;
   closeAccount();
+  if (accountId) wipeClosedAccount(accountId);
   openAccount("local");
+  ensureWorkspaceIfEmpty("local");
+  const payload = statusPayload();
+  emit("sync.status", payload);
+  return payload;
 }
 
-export async function resetPassword(email: string) {
-  if (!runtime.supabase) runtime.supabase = createAuthedClient();
-  if (!runtime.supabase) throw new Error("Cloud is not configured");
-  const { error } = await runtime.supabase.auth.resetPasswordForEmail(email, { redirectTo: "postconet://auth/callback" });
-  if (error) throw error;
+export async function resetPassword(_email: string) {
+  throw new Error("Email password reset is disabled in this version. Ask an admin to create a new in-app account, or sign in with the existing password.");
 }
 
 export async function updatePassword(password: string) {
@@ -308,9 +404,10 @@ export async function pushQueue(): Promise<{ rejected: PushReject[] }> {
   for (const op of ops) repo.markSending(op.id);
   const { data, error } = await runtime.supabase.functions.invoke("sync-push", { body: { ops } });
   if (error) {
+    const detail = await functionInvokeDetail(error);
     runtime.sync = "failed";
-    runtime.syncError = error.message;
-    for (const op of ops) repo.markOp(op.id, "failed", error.message);
+    runtime.syncError = detail;
+    for (const op of ops) repo.markOp(op.id, "failed", detail);
     emit("sync.status", statusPayload());
     return { rejected: [] };
   }

@@ -3,6 +3,7 @@ import { invoke } from "./lib/ipc";
 import { AuthScreen } from "./screens/AuthScreen";
 import { Studio } from "./screens/Studio";
 import { BrandMark } from "./components/BrandMark";
+import { DispatchLoaderFill } from "./components/DispatchLoader";
 
 export type SessionInfo = {
   user: { id: string; email: string; displayName: string } | null;
@@ -13,18 +14,22 @@ export type SessionInfo = {
   hydration?: { phase: string; detail?: string } | null;
 };
 
-const LOCAL_USER = { id: "local", email: "", displayName: "Local" };
+export const LOCAL_USER = { id: "local", email: "", displayName: "Local" };
+
+export function isCloudUser(user: SessionInfo["user"]) {
+  return Boolean(user && user.id !== "local");
+}
 
 function withOfflineUser(session: SessionInfo): SessionInfo {
-  if (!session.user && !session.cloudConfigured) {
+  if (!isCloudUser(session.user)) {
     return { ...session, user: LOCAL_USER };
   }
   return session;
 }
 
-function mergeSyncStatus(prev: SessionInfo, payload: SessionInfo): SessionInfo {
+export function mergeSyncStatus(prev: SessionInfo, payload: Partial<SessionInfo>): SessionInfo {
   const merged: SessionInfo = { ...prev, ...payload };
-  if (!payload.user && prev.user) merged.user = prev.user;
+  if (!("user" in payload)) merged.user = prev.user;
   return withOfflineUser(merged);
 }
 
@@ -95,9 +100,8 @@ export function App() {
 
   if (!session) {
     return (
-      <div className="flex min-h-screen flex-1 flex-col items-center justify-center gap-3 bg-[#f4f5f7] text-sm text-[#12151a]">
-        <BrandMark size={40} />
-        Loading PostConet…
+      <div className="flex min-h-screen flex-1 flex-col bg-[#f4f5f7] dark:bg-[#0f1115]">
+        <DispatchLoaderFill size={180} />
       </div>
     );
   }

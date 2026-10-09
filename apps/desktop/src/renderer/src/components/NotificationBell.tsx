@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Bell } from "lucide-react";
 import { invoke } from "../lib/ipc";
 
 type Note = { id: string; title: string; body?: string | null; read_at: string | null; created_at: string };
@@ -28,9 +29,19 @@ export function NotificationBell() {
 
   return (
     <div className="relative">
-      <button className="relative rounded-md border border-[var(--border)] px-2 py-1 text-xs" onClick={() => setOpen((v) => !v)}>
-        Inbox
-        {unread > 0 && <span className="ml-1 rounded-full bg-[var(--accent)] px-1.5 text-[10px] text-white">{unread}</span>}
+      <button
+        type="button"
+        title="Inbox"
+        aria-label={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}
+        className="relative flex items-center justify-center rounded-md border border-[var(--border)] px-2 py-1"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Bell size={14} />
+        {unread > 0 && (
+          <span className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-[var(--accent)] px-1 text-center text-[10px] leading-4 text-white">
+            {unread}
+          </span>
+        )}
       </button>
       {open && (
         <div className="absolute right-0 z-30 mt-1 w-80 rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 shadow-lg">

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Settings } from "lucide-react";
-import type { SessionInfo } from "../App";
+import { isCloudUser, LOCAL_USER, mergeSyncStatus, type SessionInfo } from "../App";
 import { invoke } from "../lib/ipc";
 import { Sidebar, type SidebarAction, type SidebarFocus, type DragItem, type DropTarget } from "../components/Sidebar";
 import { AppSearch } from "../components/AppSearch";
@@ -14,9 +14,12 @@ import { ShareModal } from "../components/ShareModal";
 import { EnvPanel } from "../components/EnvPanel";
 import { HistoryPanel } from "../components/HistoryPanel";
 import { SettingsScreen } from "../components/SettingsScreen";
+import { AuthScreen } from "./AuthScreen";
 import { NotificationBell } from "../components/NotificationBell";
 import { BrandMark } from "../components/BrandMark";
 import { ConflictDialog } from "../components/ConflictDialog";
+import { downloadPostmanJson } from "../lib/postmanExport";
+import { DispatchLoaderOverlay } from "../components/DispatchLoader";
 
 export type Tree = {
   workspace?: { id: string; name: string; kind: string };
@@ -93,7 +96,8 @@ export function Studio(props: {
   const [share, setShare] = useState<MenuTarget | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ draft: RequestRecord; latest: RequestRecord; deleted?: boolean } | null>(null);
-  const signedIn = Boolean(props.session.user && props.session.user.id !== "local");
+  const [showSignIn, setShowSignIn] = useState(false);
+  const signedIn = isCloudUser(sync.user);
   const workspaceIdRef = useRef(workspaceId);
   const activeIdRef = useRef(activeId);
   const tabsRef = useRef(tabs);
@@ -117,7 +121,7 @@ export function Studio(props: {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, props.session.user?.id]);
 
   useEffect(() => {
     if (!window.postconet) return;
@@ -128,12 +132,7 @@ export function Studio(props: {
       if (action === "save") void persistActive();
     });
     const offSync = window.postconet.on("sync.status", (p) =>
-      setSync((s) => {
-        const payload = p as SessionInfo;
-        const merged = { ...s, ...payload };
-        if (!payload.user && s.user) merged.user = s.user;
-        return merged;
-      })
+      setSync((s) => mergeSyncStatus(s, p as SessionInfo))
     );
     const offChanged = window.postconet.on("sync.changed", (raw) => {
       const event = raw as { entityType?: string; entityId?: string; op?: string; payload?: unknown };
@@ -239,6 +238,23 @@ export function Studio(props: {
     }
     if (action === "delete") setConfirm(target);
     if (action === "share") setShare(target);
+    if (action === "export") void exportAsPostman(target);
+  }
+
+  async function exportAsPostman(target: MenuTarget) {
+    try {
+      try {
+        await invoke("export.download", { kind: target.kind, id: target.id });
+        return;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!msg.includes("No handler registered") && !msg.includes("export.download")) throw e;
+      }
+      if (!tree) throw new Error("Nothing to export");
+      await downloadPostmanJson(tree, target);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   async function onDrop(item: DragItem, target: DropTarget) {
@@ -285,14 +301,23 @@ export function Studio(props: {
     return [col?.auth ?? { type: "none", params: {} }, folder?.auth ?? { type: "inherit", params: {} }, (active.request.document as { auth?: { type: string; params: Record<string, string> } }).auth ?? { type: "inherit", params: {} }];
   }, [active, tree]);
 
+  useEffect(() => {
+    setSync(props.session);
+  }, [props.session]);
+
   async function goLocal() {
-    await invoke("auth.signOut");
-    props.onSession({ ...props.session, user: { id: "local", email: "", displayName: "Local" } });
+    const payload = await invoke<Partial<SessionInfo>>("auth.signOut");
+    const next = mergeSyncStatus(sync, { ...payload, user: LOCAL_USER });
+    setSync(next);
+    props.onSession(next);
+    setTabs([]);
+    setActiveId(null);
+    setShare(null);
   }
 
   return (
-    <div className="flex h-full min-h-screen flex-1 flex-col bg-[#f4f5f7] text-[#12151a] dark:bg-[#0f1115] dark:text-[#eef0f4]">
-      <header className="titlebar-drag flex h-12 items-center justify-between border-b border-[var(--border)] bg-[var(--panel)] pl-20 pr-4">
+    <div className="flex h-screen w-full flex-col overflow-hidden bg-[#f4f5f7] text-[#12151a] dark:bg-[#0f1115] dark:text-[#eef0f4]">
+      <header className="titlebar-drag relative z-40 flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--panel)] pl-20 pr-4">
         <div className="titlebar-no-drag flex items-center gap-3 text-sm">
           <BrandMark size={22} />
           <span className="font-medium">PostConet</span>
@@ -336,6 +361,11 @@ export function Studio(props: {
           <button className="rounded-md border border-[var(--border)] px-2 py-1 text-xs" onClick={() => props.onTheme(props.theme === "dark" ? "light" : "dark")}>
             {props.theme === "dark" ? "Light" : "Dark"}
           </button>
+          {!signedIn && (
+            <button className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white" onClick={() => setShowSignIn(true)}>
+              Sign in
+            </button>
+          )}
         </div>
       </header>
       {actionError && (
@@ -343,7 +373,24 @@ export function Studio(props: {
           {actionError}
         </div>
       )}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative z-0 flex min-h-0 flex-1 overflow-hidden">
+        {showSignIn && !signedIn ? (
+          <AuthScreen
+            cloudConfigured={sync.cloudConfigured}
+            theme={props.theme}
+            onTheme={props.onTheme}
+            initialMode="signin"
+            onAuthed={(user) => {
+              const next = { ...sync, user };
+              setSync(next);
+              props.onSession(next);
+              setShowSignIn(false);
+            }}
+            onContinueLocal={() => setShowSignIn(false)}
+          />
+        ) : (
+        <>
+        {!tree && <DispatchLoaderOverlay size={160} />}
         <div className="flex w-12 flex-col items-center gap-2 border-r border-[var(--border)] bg-[var(--panel)] py-3 text-[10px] text-[var(--muted)]">
           <RailBtn label="API" active={rail === "api"} onClick={() => setRail("api")} />
           <RailBtn label="Env" active={rail === "env"} onClick={() => setRail("env")} />
@@ -359,7 +406,7 @@ export function Studio(props: {
           </div>
         </div>
         {rail === "api" && (
-          <PanelGroup direction="horizontal" className="flex-1">
+          <PanelGroup direction="horizontal" className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <Panel defaultSize={22} minSize={14}>
               <Sidebar
                 tree={tree}
@@ -426,17 +473,17 @@ export function Studio(props: {
           </PanelGroup>
         )}
         {rail === "env" && (
-          <div className="min-w-0 flex-1">
+          <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden">
             <EnvPanel workspaceId={workspaceId} tree={tree} environmentId={environmentId} onEnvironment={setEnvironmentId} onReload={async () => { if (workspaceId) await load(workspaceId); }} />
           </div>
         )}
         {rail === "hist" && (
-          <div className="min-w-0 flex-1">
+          <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden">
             <HistoryPanel workspaceId={workspaceId} onOpen={open} />
           </div>
         )}
         {rail === "settings" && (
-          <div className="min-w-0 flex-1">
+          <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <SettingsScreen
               session={sync}
               theme={props.theme}
@@ -447,8 +494,10 @@ export function Studio(props: {
             />
           </div>
         )}
+        </>
+        )}
       </div>
-      <StatusBar sync={sync} onSignOut={() => void goLocal()} />
+      <StatusBar sync={sync} />
       {palette && (
         <CommandPalette
           onClose={() => setPalette(false)}

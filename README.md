@@ -50,7 +50,7 @@ Continue **offline** from the sign-in screen if cloud is not configured. Account
 
 | Feature | Requirement | If missing |
 | --- | --- | --- |
-| Register / verify / reset password | Supabase project + Auth email | Sign-in shows “cloud not configured”; local mode still works |
+| Register / sign in | Supabase project + deployed `register` function | Sign-in shows “cloud not configured”; local mode still works |
 | Sync + second computer | Same + applied migrations | Queue stays local; status is `offline`/`failed` with the error |
 | Team invites / RLS | Migrations + two test users | Live RLS tests skip unless `POSTCONET_IT_*` is set |
 | Cloud monitors while the Mac is closed | `apps/worker` + service role | UI/worker respond that the worker is not configured |

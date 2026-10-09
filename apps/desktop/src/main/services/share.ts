@@ -9,8 +9,14 @@ export async function inviteShare(input: {
 }) {
   if (!runtime.supabase || !runtime.user) throw new Error("Sign in to share.");
   const { data, error } = await runtime.supabase.functions.invoke("share-invite", { body: input });
+  const payload = data as { error?: string } | null;
+  const code = payload?.error || (error ? String(error.message ?? error) : "");
+  if (code.includes("user_not_found") || /not found/i.test(code)) {
+    throw new Error("No PostConet account uses that email. They must create an account in the app first.");
+  }
+  if (code.includes("cannot_share_with_self")) throw new Error("You already have access to this item.");
   if (error) throw error;
-  if (data?.error) throw new Error(String(data.error));
+  if (payload?.error) throw new Error(String(payload.error));
   return data;
 }
 

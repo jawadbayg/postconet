@@ -1,4 +1,5 @@
 import { Component, lazy, Suspense, type ErrorInfo, type ReactNode, useEffect, useState } from "react";
+import { DispatchLoaderFill } from "./DispatchLoader";
 
 const MonacoPane = lazy(() => import("./MonacoPane"));
 
@@ -52,7 +53,7 @@ export function CodeEditor(props: CodeEditorProps) {
   const fallback = <FallbackEditor {...props} />;
   return (
     <EditorBoundary fallback={fallback}>
-      <Suspense fallback={fallback}>
+      <Suspense fallback={<DispatchLoaderFill size={100} />}>
         <MonacoPane {...props} dark={dark} />
       </Suspense>
     </EditorBoundary>

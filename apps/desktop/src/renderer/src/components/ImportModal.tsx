@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "../lib/ipc";
+import { DispatchLoaderOverlay } from "./DispatchLoader";
 
 type Preview = {
   format: string;
@@ -53,7 +54,8 @@ export function ImportModal(props: { workspaceId: string; onClose: () => void; o
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={props.onClose}>
-      <div className="flex h-[70vh] w-[720px] flex-col rounded-lg border border-[var(--border)] bg-[var(--panel)] shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div className="relative flex h-[70vh] w-[720px] flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)] shadow-xl" onClick={(e) => e.stopPropagation()}>
+        {busy && <DispatchLoaderOverlay size={140} />}
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3 text-sm font-medium">
           Import
           <button onClick={props.onClose}>×</button>
