@@ -16,7 +16,8 @@ import {
   type SavedRequest,
   type Environment,
   mcpInitializeHttp,
-  mcpStartStdio
+  mcpStartStdio,
+  sameEntityContent
 } from "@postconet/core";
 import { runtime } from "../services/state.js";
 import {
@@ -56,6 +57,7 @@ import { isCloudConfigured } from "../config.js";
 import { closeConnection, openConnection, sendConnection } from "../services/connections.js";
 import { authorizeInSystemBrowser } from "../services/oauth-loopback.js";
 import { signInSchema, signUpSchema } from "@postconet/core";
+import { checkForUpdates, currentVersion, installUpdate, updateStatus, updatesSupported } from "../services/updater.js";
 
 function ok<T>(data: T) {
   return { ok: true as const, data };
@@ -86,6 +88,10 @@ function bindIpc(channel: string, listener: Parameters<typeof ipcMain.handle>[1]
 export function registerIpc() {
   bindIpc("app.brand", () => handle(async () => (await import("@postconet/core")).brand));
   bindIpc("app.cloudConfigured", () => ok(isCloudConfigured()));
+  bindIpc("app.version", () => ok({ version: currentVersion(), updatesSupported: updatesSupported() }));
+  bindIpc("update.status", () => ok(updateStatus()));
+  bindIpc("update.check", () => handle(() => checkForUpdates()));
+  bindIpc("update.install", () => handle(() => installUpdate()));
 
   bindIpc("auth.session", () => ok(statusPayload()));
   bindIpc("auth.signUp", (_e, raw) =>
@@ -179,6 +185,8 @@ export function registerIpc() {
           return { status: "conflict" as const, draft: incoming, latest: latest ?? result.request, deleted: true };
         }
         if (latest.version !== result.request.version) {
+          // The server already holds exactly this content; nothing for the user to choose.
+          if (sameEntityContent(incoming, latest)) return { status: "saved" as const, request: latest };
           return { status: "conflict" as const, draft: incoming, latest };
         }
       }

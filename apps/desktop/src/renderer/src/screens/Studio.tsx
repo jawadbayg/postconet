@@ -22,6 +22,7 @@ import { BrandMark } from "../components/BrandMark";
 import { ConflictDialog } from "../components/ConflictDialog";
 import { downloadPostmanJson } from "../lib/postmanExport";
 import { DispatchLoaderOverlay } from "../components/DispatchLoader";
+import { UpdateBanner } from "../components/UpdateBanner";
 
 export type Tree = {
   workspace?: { id: string; name: string; kind: string };
@@ -106,7 +107,7 @@ export function Studio(props: {
   const [confirm, setConfirm] = useState<MenuTarget | null>(null);
   const [share, setShare] = useState<ShareTarget | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<{ draft: RequestRecord; latest: RequestRecord; deleted?: boolean } | null>(null);
+  const [conflict, setConflict] = useState<{ draft: RequestRecord; latest: RequestRecord; deleted?: boolean; nonce?: number } | null>(null);
   const [showSignIn, setShowSignIn] = useState(false);
   const signedIn = isCloudUser(sync.user);
   const workspaceIdRef = useRef(workspaceId);
@@ -226,7 +227,8 @@ export function Studio(props: {
         expectedLatest: opts?.expectedLatest
       });
       if (result.status === "conflict") {
-        setConflict({ draft: result.draft, latest: result.latest, deleted: result.deleted });
+        // A fresh nonce remounts the dialog so a repeated conflict never leaves it stuck on a stale confirm step.
+        setConflict({ draft: result.draft, latest: result.latest, deleted: result.deleted, nonce: Date.now() });
         setTabs((prev) =>
           prev.map((t) => (t.id === tab.id ? { ...t, dirty: true, remoteUpdated: true, latestRemote: result.latest } : t))
         );
@@ -454,6 +456,7 @@ export function Studio(props: {
           )}
         </div>
       </header>
+      <UpdateBanner />
       {actionError && (
         <div className="border-b border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
           {actionError}
@@ -683,6 +686,7 @@ export function Studio(props: {
       )}
       {conflict && (
         <ConflictDialog
+          key={`${conflict.latest.id}:${conflict.latest.version}:${conflict.deleted ? "d" : "l"}:${conflict.nonce ?? 0}`}
           draft={conflict.draft}
           latest={conflict.latest}
           deleted={conflict.deleted}

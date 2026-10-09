@@ -42,7 +42,9 @@ nsis:
   uninstallDisplayName: PostConet API Studio
   deleteAppDataOnUninstall: false
 publish:
-  provider: generic
-  url: https://updates.postconet.app
+  provider: github
+  owner: jawadbayg
+  repo: postconet
+  releaseType: release
 extraMetadata:
   main: out/main/index.js

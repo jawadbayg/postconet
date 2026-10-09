@@ -9,6 +9,7 @@ import { registerIpc } from "./ipc/register.js";
 import { acceptPendingInvites, restoreSession, startSyncRuntime } from "./services/cloud.js";
 import { appBrand } from "./config.js";
 import { openAccount } from "./services/studio.js";
+import { startAutoUpdater } from "./services/updater.js";
 
 if (process.defaultApp) {
   app.setAsDefaultProtocolClient("postconet", process.execPath, process.argv[1] ? [process.argv[1]] : []);
@@ -208,6 +209,7 @@ app.whenReady().then(async () => {
     }
   }
   createWindow();
+  startAutoUpdater();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

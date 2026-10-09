@@ -1,6 +1,6 @@
 import { runtime } from "./state.js";
 import { supabaseAnonKey, supabaseUrl } from "../config.js";
-import { flushSync } from "./cloud.js";
+import { ensureSession, flushSync } from "./cloud.js";
 
 function shareErrorMessage(code: string, fallback: string) {
   const text = code.trim();
@@ -23,9 +23,8 @@ function shareErrorMessage(code: string, fallback: string) {
 
 async function invokeShare(name: string, body: unknown) {
   if (!runtime.supabase || !runtime.user) throw new Error("Sign in to share.");
-  const { data: sessionData } = await runtime.supabase.auth.getSession();
-  const token = sessionData.session?.access_token;
-  if (!token) throw new Error("Sign in again, then try sharing.");
+  const token = await ensureSession();
+  if (!token) throw new Error("Your session expired. Sign out, then sign in again before sharing.");
   const res = await fetch(`${supabaseUrl().replace(/\/$/, "")}/functions/v1/${name}`, {
     method: "POST",
     headers: {

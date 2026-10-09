@@ -19,13 +19,54 @@ import {
 import { sameEntityContent, summarizeState, type ChangeLogRow } from "@postconet/core";
 import { app, BrowserWindow, net, powerMonitor } from "electron";
 
-export function createAuthedClient(session?: Session) {
+const SESSION_EXPIRED = "Your session expired. Sign out, then sign in again to resume sync.";
+
+export function createAuthedClient() {
   if (!isCloudConfigured()) return null;
   const client = createClient(supabaseUrl(), supabaseAnonKey(), {
     auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: false }
   });
-  if (session) void client.auth.setSession({ access_token: session.access_token, refresh_token: session.refresh_token });
+  // Supabase rotates the refresh token on every renewal. Persist each rotation, or the next
+  // app start presents an already-used refresh token and every cloud call becomes "unauthorized".
+  client.auth.onAuthStateChange((event, session) => {
+    if (session?.refresh_token) {
+      saveSession(session);
+      if (runtime.syncError === SESSION_EXPIRED) {
+        runtime.syncError = null;
+        refreshStatus();
+      }
+      return;
+    }
+    if (event === "SIGNED_OUT" && runtime.user && !signingOut) markSessionExpired();
+  });
   return client;
+}
+
+let signingOut = false;
+
+async function adoptSession(client: NonNullable<typeof runtime.supabase>, session: Session): Promise<boolean> {
+  const { data, error } = await client.auth.setSession({ access_token: session.access_token, refresh_token: session.refresh_token });
+  if (error || !data.session) return false;
+  saveSession(data.session);
+  return true;
+}
+
+function markSessionExpired() {
+  runtime.sync = "failed";
+  runtime.syncError = SESSION_EXPIRED;
+  emit("sync.status", statusPayload());
+}
+
+/** Returns a live access token, refreshing if needed; null (and a visible status) when the session is gone. */
+export async function ensureSession(): Promise<string | null> {
+  if (!runtime.supabase || !runtime.user) return null;
+  const { data, error } = await runtime.supabase.auth.getSession();
+  const token = data.session?.access_token ?? null;
+  if (error || !token) {
+    markSessionExpired();
+    return null;
+  }
+  return token;
 }
 
 function emit(channel: string, payload: unknown) {
@@ -94,6 +135,7 @@ export async function flushSync() {
     runtime.sync = "syncing";
     runtime.syncError = null;
     emit("sync.status", statusPayload());
+    if (!(await ensureSession())) return;
     await reconcileUnsyncedOnce();
     await pullAllWorkspaces();
     await pushQueue();
@@ -151,8 +193,13 @@ export async function restoreSession() {
     return { user: null, cloudConfigured: false };
   }
   const session = loadSession();
-  runtime.supabase = createAuthedClient(session ?? undefined);
+  runtime.supabase = createAuthedClient();
   if (!session || !runtime.supabase) return { user: null, cloudConfigured: true };
+  const adopted = await adoptSession(runtime.supabase, session);
+  if (!adopted) {
+    clearSession();
+    return { user: null, cloudConfigured: true };
+  }
   const { data, error } = await runtime.supabase.auth.getUser();
   if (error || !data.user) {
     clearSession();
@@ -287,7 +334,13 @@ export async function signOut() {
   pendingLocalSnapshot = null;
   pendingUser = null;
   queueReconciled = false;
-  await runtime.supabase?.auth.signOut();
+  signingOut = true;
+  try {
+    await runtime.supabase?.auth.signOut();
+  } catch {
+    /* already signed out server-side; local cleanup still runs */
+  }
+  signingOut = false;
   clearSession();
   runtime.user = null;
   runtime.sync = "offline";
@@ -314,6 +367,7 @@ export async function updatePassword(password: string) {
 
 export async function hydrateFromCloud() {
   if (!runtime.supabase || !runtime.user) return;
+  if (!(await ensureSession())) return;
   runtime.sync = "syncing";
   runtime.lastHydration = { phase: "Downloading workspaces" };
   emit("sync.progress", runtime.lastHydration);
@@ -350,28 +404,28 @@ export async function hydrateFromCloud() {
       repo.upsertWorkspace(incomingWs as never, false);
     }
     const cloudCollections = await pullEntity("collections", ws.id, (row) => {
-      const incoming = row.payload as { id?: string; version?: number } | null;
-      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
+      const incoming = cloudRowToEntity(row);
+      if (!incoming || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getCollection(incoming.id);
-      if (!local || Number(incoming.version) > local.version) repo.upsertCollection(row.payload as never, false);
+      if (!local || incoming.version > local.version || (incoming.deletedAt && !local.deletedAt)) repo.upsertCollection(incoming as never, false);
     });
     const cloudFolders = await pullEntity("folders", ws.id, (row) => {
-      const incoming = row.payload as { id?: string; version?: number } | null;
-      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
+      const incoming = cloudRowToEntity(row);
+      if (!incoming || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getFolder(incoming.id);
-      if (!local || Number(incoming.version) > local.version) repo.upsertFolder(row.payload as never, false);
+      if (!local || incoming.version > local.version || (incoming.deletedAt && !local.deletedAt)) repo.upsertFolder(incoming as never, false);
     });
     const cloudRequests = await pullEntity("requests", ws.id, (row) => {
-      const incoming = row.payload as { id?: string; version?: number } | null;
-      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
+      const incoming = cloudRowToEntity(row);
+      if (!incoming || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getRequest(incoming.id);
-      if (!local || Number(incoming.version) > local.version) repo.upsertRequest(row.payload as never, false);
+      if (!local || incoming.version > local.version || (incoming.deletedAt && !local.deletedAt)) repo.upsertRequest(incoming as never, false);
     });
     const cloudEnvs = await pullEntity("environments", ws.id, (row) => {
-      const incoming = row.payload as { id?: string; version?: number } | null;
-      if (!incoming?.id || repo.hasPendingEntity(incoming.id)) return;
+      const incoming = cloudRowToEntity(row);
+      if (!incoming || repo.hasPendingEntity(incoming.id)) return;
       const local = repo.getEnvironment(incoming.id);
-      if (!local || Number(incoming.version) > local.version) repo.upsertEnvironment(row.payload as never, false);
+      if (!local || incoming.version > local.version || (incoming.deletedAt && !local.deletedAt)) repo.upsertEnvironment(incoming as never, false);
     });
     enqueueMissingCloudEntities(ws.id, cloudCollections, cloudFolders, cloudRequests, cloudEnvs);
     const cursor = await runtime.supabase.from("change_log").select("seq").eq("workspace_id", ws.id).order("seq", { ascending: false }).limit(1);
@@ -390,11 +444,33 @@ export async function hydrateFromCloud() {
   emit("sync.status", statusPayload());
 }
 
-async function pullEntity(table: string, workspaceId: string, apply: (row: { payload: unknown }) => void): Promise<Set<string>> {
-  const { data } = await runtime.supabase!.from(table).select("id, payload").eq("workspace_id", workspaceId);
+type CloudRow = { id?: string; version?: number | string; deleted_at?: string | null; updated_at?: string; payload: unknown };
+
+/**
+ * Deletes and version bumps live in the row columns, not inside the JSON payload
+ * (a delete never rewrites the payload). Merge them so a deleted item is not revived locally.
+ */
+function cloudRowToEntity(row: CloudRow): { id: string; version: number; deletedAt: string | null } & Record<string, unknown> | null {
+  const payload = (row.payload && typeof row.payload === "object" ? row.payload : {}) as Record<string, unknown>;
+  const id = String(row.id ?? payload.id ?? "");
+  if (!id) return null;
+  const payloadVersion = Number(payload.version ?? 0);
+  const rowVersion = Number(row.version ?? payloadVersion);
+  const deletedAt = (row.deleted_at as string | null | undefined) ?? (payload.deletedAt as string | null | undefined) ?? null;
+  return {
+    ...payload,
+    id,
+    version: Math.max(rowVersion, payloadVersion),
+    deletedAt,
+    updatedAt: (deletedAt && row.updated_at) || (payload.updatedAt as string | undefined) || row.updated_at || new Date().toISOString()
+  };
+}
+
+async function pullEntity(table: string, workspaceId: string, apply: (row: CloudRow) => void): Promise<Set<string>> {
+  const { data } = await runtime.supabase!.from(table).select("id, version, deleted_at, updated_at, payload").eq("workspace_id", workspaceId);
   const ids = new Set<string>();
   for (const row of data ?? []) {
-    const record = row as { id?: string; payload: unknown };
+    const record = row as CloudRow;
     if (record.id) ids.add(record.id);
     const payload = record.payload as { id?: string } | null;
     if (payload?.id) ids.add(payload.id);
@@ -509,13 +585,16 @@ export async function pushQueue(): Promise<{ rejected: PushReject[] }> {
   repo.recoverSendingOps();
   const ops = repo.pendingOps();
   if (ops.length === 0) return { rejected: [] };
+  if (!(await ensureSession())) return { rejected: [] };
   for (const op of ops) repo.markSending(op.id);
   const { data, error } = await runtime.supabase.functions.invoke("sync-push", { body: { ops } });
   if (error) {
     const detail = await functionInvokeDetail(error);
+    const expired = /unauthorized|invalid jwt|jwt expired/i.test(detail);
     runtime.sync = "failed";
-    runtime.syncError = detail;
-    for (const op of ops) repo.markOp(op.id, "failed", detail);
+    runtime.syncError = expired ? SESSION_EXPIRED : detail;
+    // Leave the ops retryable; a transport/auth failure is not a verdict on the data.
+    for (const op of ops) repo.markOp(op.id, "pending", expired ? SESSION_EXPIRED : detail);
     emit("sync.status", statusPayload());
     return { rejected: [] };
   }
