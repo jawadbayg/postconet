@@ -990,3 +990,36 @@ create policy "revisions insert" on public.revisions
   );
 
 create index if not exists idx_revisions_entity on public.revisions (entity_type, entity_id, version);
+
+-- 0008_workspace_invite: owner names on shared workspaces + realtime members
+drop policy if exists "profiles visible in readable workspaces" on public.profiles;
+create policy "profiles visible in readable workspaces"
+on public.profiles
+for select
+using (
+  exists (
+    select 1
+    from public.workspaces w
+    where w.owner_user_id = profiles.id
+      and public.can_read_workspace(w.id)
+  )
+  or exists (
+    select 1
+    from public.workspace_members wm
+    where wm.user_id = profiles.id
+      and public.can_read_workspace(wm.workspace_id)
+  )
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'workspace_members'
+  ) then
+    alter publication supabase_realtime add table public.workspace_members;
+  end if;
+end $$;

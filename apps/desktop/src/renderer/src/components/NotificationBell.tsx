@@ -2,9 +2,26 @@ import { useEffect, useState } from "react";
 import { Bell } from "lucide-react";
 import { invoke } from "../lib/ipc";
 
-type Note = { id: string; title: string; body?: string | null; read_at: string | null; created_at: string };
+export type NotifyPayload = {
+  workspaceId?: string;
+  resourceKind?: "workspace" | "collection" | "folder" | "request";
+  resourceId?: string;
+  collectionId?: string | null;
+  folderId?: string | null;
+  name?: string;
+  ownerLabel?: string;
+};
 
-export function NotificationBell() {
+type Note = {
+  id: string;
+  title: string;
+  body?: string | null;
+  payload?: NotifyPayload | null;
+  read_at: string | null;
+  created_at: string;
+};
+
+export function NotificationBell(props: { onOpen?: (payload: NotifyPayload) => void }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
 
@@ -44,7 +61,7 @@ export function NotificationBell() {
         )}
       </button>
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-80 rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 shadow-lg">
+        <div className="absolute right-0 z-30 mt-1 max-h-96 w-96 overflow-auto rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 shadow-lg">
           {notes.length === 0 && <div className="p-3 text-xs text-[var(--muted)]">No notifications</div>}
           {notes.map((note) => (
             <button
@@ -52,10 +69,15 @@ export function NotificationBell() {
               className="mb-1 block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--canvas)]"
               onClick={() => {
                 void invoke("notifications.read", { id: note.id }).then(refresh);
+                setOpen(false);
+                if (note.payload?.workspaceId) props.onOpen?.(note.payload);
               }}
             >
               <div className="font-medium">{note.title}</div>
-              {note.body && <div className="text-[var(--muted)]">{note.body}</div>}
+              {note.body && <div className="mt-0.5 whitespace-pre-wrap text-[var(--muted)]">{note.body}</div>}
+              {note.payload?.workspaceId && (
+                <div className="mt-1 text-[11px] text-[var(--accent)]">Open in sidebar</div>
+              )}
             </button>
           ))}
         </div>

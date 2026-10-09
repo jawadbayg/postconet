@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { Settings } from "lucide-react";
+import { Pencil, Settings, UserPlus } from "lucide-react";
 import { isCloudUser, LOCAL_USER, mergeSyncStatus, type SessionInfo } from "../App";
 import { invoke } from "../lib/ipc";
 import { Sidebar, type SidebarAction, type SidebarFocus, type DragItem, type DropTarget } from "../components/Sidebar";
@@ -10,7 +10,9 @@ import { StatusBar } from "../components/StatusBar";
 import { CommandPalette } from "../components/CommandPalette";
 import { ImportModal } from "../components/ImportModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { ShareModal } from "../components/ShareModal";
+import { ShareModal, type ShareTarget } from "../components/ShareModal";
+import { ThemeToggle } from "../components/ThemeToggle";
+import type { NotifyPayload } from "../components/NotificationBell";
 import { EnvPanel } from "../components/EnvPanel";
 import { HistoryPanel } from "../components/HistoryPanel";
 import { SettingsScreen } from "../components/SettingsScreen";
@@ -72,6 +74,15 @@ function asRequest(payload: unknown): RequestRecord | null {
 
 type Rail = "api" | "env" | "hist" | "settings";
 type MenuTarget = { kind: "collection" | "folder" | "request"; id: string; name: string; collectionId?: string };
+type RenameTarget = MenuTarget | { kind: "workspace"; id: string; name: string };
+type WorkspaceItem = {
+  id: string;
+  name: string;
+  kind: string;
+  mine: boolean;
+  ownerName: string;
+  label: string;
+};
 
 export function Studio(props: {
   session: SessionInfo;
@@ -79,7 +90,7 @@ export function Studio(props: {
   onTheme: (t: "light" | "dark") => void;
   onSession: (s: SessionInfo) => void;
 }) {
-  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string; kind: string }>>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [tree, setTree] = useState<Tree | null>(null);
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -90,10 +101,10 @@ export function Studio(props: {
   const [sync, setSync] = useState(props.session);
   const [focus, setFocus] = useState<SidebarFocus | null>(null);
   const [rail, setRail] = useState<Rail>("api");
-  const [rename, setRename] = useState<MenuTarget | null>(null);
+  const [rename, setRename] = useState<RenameTarget | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirm, setConfirm] = useState<MenuTarget | null>(null);
-  const [share, setShare] = useState<MenuTarget | null>(null);
+  const [share, setShare] = useState<ShareTarget | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ draft: RequestRecord; latest: RequestRecord; deleted?: boolean } | null>(null);
   const [showSignIn, setShowSignIn] = useState(false);
@@ -107,7 +118,7 @@ export function Studio(props: {
 
   const load = useCallback(async (id?: string) => {
     try {
-      const list = await invoke<Array<{ id: string; name: string; kind: string }>>("workspace.list");
+      const list = await invoke<WorkspaceItem[]>("workspace.list");
       setWorkspaces(list);
       const ws = id ?? list[0]?.id;
       if (!ws) return;
@@ -134,6 +145,9 @@ export function Studio(props: {
     const offSync = window.postconet.on("sync.status", (p) =>
       setSync((s) => mergeSyncStatus(s, p as SessionInfo))
     );
+    const offNotify = window.postconet.on("notify", () => {
+      void load(workspaceIdRef.current ?? undefined);
+    });
     const offChanged = window.postconet.on("sync.changed", (raw) => {
       const event = raw as { entityType?: string; entityId?: string; op?: string; payload?: unknown };
       void load(workspaceIdRef.current ?? undefined);
@@ -164,6 +178,7 @@ export function Studio(props: {
     return () => {
       off();
       offSync();
+      offNotify();
       offChanged();
       window.removeEventListener("keydown", onKey);
     };
@@ -237,7 +252,9 @@ export function Studio(props: {
       setRenameValue(target.name);
     }
     if (action === "delete") setConfirm(target);
-    if (action === "share") setShare(target);
+    if (action === "share" && workspaceId) {
+      setShare({ kind: target.kind, id: target.id, name: target.name, workspaceId });
+    }
     if (action === "export") void exportAsPostman(target);
   }
 
@@ -305,6 +322,25 @@ export function Studio(props: {
     setSync(props.session);
   }, [props.session]);
 
+  const currentWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null;
+
+  async function openSharedItem(payload: NotifyPayload) {
+    if (!payload.workspaceId) return;
+    setRail("api");
+    await load(payload.workspaceId);
+    const collectionId = payload.collectionId ?? (payload.resourceKind === "collection" ? payload.resourceId : null);
+    const folderId = payload.folderId ?? (payload.resourceKind === "folder" ? payload.resourceId : null);
+    const highlightId = payload.resourceId ?? collectionId ?? undefined;
+    if (collectionId && highlightId) {
+      setFocus({
+        token: Date.now(),
+        collectionId,
+        folderId: folderId ?? null,
+        highlightId
+      });
+    }
+  }
+
   async function goLocal() {
     const payload = await invoke<Partial<SessionInfo>>("auth.signOut");
     const next = mergeSyncStatus(sync, { ...payload, user: LOCAL_USER });
@@ -317,19 +353,51 @@ export function Studio(props: {
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-[#f4f5f7] text-[#12151a] dark:bg-[#0f1115] dark:text-[#eef0f4]">
-      <header className="titlebar-drag relative z-40 flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--panel)] pl-20 pr-4">
-        <div className="titlebar-no-drag flex items-center gap-3 text-sm">
+      <header className="titlebar-drag relative z-40 flex h-12 shrink-0 items-center border-b border-[var(--border)] bg-[var(--panel)] pl-20 pr-4">
+        <div className="titlebar-no-drag flex min-w-0 items-center gap-3 text-sm">
           <BrandMark size={22} />
           <span className="font-medium">PostConet</span>
-          <select className="rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs" value={workspaceId ?? ""} onChange={(e) => void load(e.target.value)}>
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
+          <select
+            className="max-w-[240px] rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs"
+            value={workspaceId ?? ""}
+            onChange={(e) => void load(e.target.value)}
+            title="Switch workspace. Your workspaces first, then ones shared with you."
+          >
+            {workspaces.some((w) => w.mine) && (
+              <optgroup label="My workspaces">
+                {workspaces.filter((w) => w.mine).map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {workspaces.some((w) => !w.mine) && (
+              <optgroup label="Shared with me">
+                {workspaces.filter((w) => !w.mine).map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
+          {currentWorkspace?.mine && (
+            <button
+              type="button"
+              title="Rename workspace"
+              aria-label="Rename workspace"
+              className="flex h-[26px] w-[26px] items-center justify-center rounded-md border border-[var(--border)] text-[var(--muted)]"
+              onClick={() => {
+                setRename({ kind: "workspace", id: currentWorkspace.id, name: currentWorkspace.name });
+                setRenameValue(currentWorkspace.name);
+              }}
+            >
+              <Pencil size={12} />
+            </button>
+          )}
         </div>
-        <div className="titlebar-no-drag flex items-center gap-2">
+        <div className="titlebar-no-drag absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
           <AppSearch
             tree={tree}
             onOpenRequest={(req) => {
@@ -354,13 +422,31 @@ export function Studio(props: {
               setRail("env");
             }}
           />
+        </div>
+        <div className="titlebar-no-drag ml-auto flex items-center gap-2">
           <button className="rounded-md border border-[var(--border)] px-2 py-1 text-xs" onClick={() => setImporter(true)}>
             Import
           </button>
-          {signedIn && <NotificationBell />}
-          <button className="rounded-md border border-[var(--border)] px-2 py-1 text-xs" onClick={() => props.onTheme(props.theme === "dark" ? "light" : "dark")}>
-            {props.theme === "dark" ? "Light" : "Dark"}
-          </button>
+          {signedIn && currentWorkspace?.mine && (
+            <button
+              type="button"
+              className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs"
+              title="Invite someone to this whole workspace"
+              onClick={() =>
+                setShare({
+                  kind: "workspace",
+                  id: currentWorkspace.id,
+                  name: currentWorkspace.name,
+                  workspaceId: currentWorkspace.id
+                })
+              }
+            >
+              <UserPlus size={12} />
+              Invite
+            </button>
+          )}
+          {signedIn && <NotificationBell onOpen={(payload) => void openSharedItem(payload)} />}
+          <ThemeToggle theme={props.theme} onTheme={props.onTheme} />
           {!signedIn && (
             <button className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-white" onClick={() => setShowSignIn(true)}>
               Sign in
@@ -490,6 +576,9 @@ export function Studio(props: {
               onTheme={props.onTheme}
               onSession={props.onSession}
               workspaceId={workspaceId}
+              workspaceName={currentWorkspace?.name ?? null}
+              canRenameWorkspace={Boolean(currentWorkspace?.mine)}
+              onWorkspaceRenamed={() => void load(workspaceId ?? undefined)}
               onSignOut={() => void goLocal()}
             />
           </div>
@@ -518,7 +607,11 @@ export function Studio(props: {
             onSubmit={async (e) => {
               e.preventDefault();
               try {
-                await invoke("workspace.rename", { type: rename.kind, id: rename.id, name: renameValue });
+                if (rename.kind === "workspace") {
+                  await invoke("workspace.renameWorkspace", { id: rename.id, name: renameValue });
+                } else {
+                  await invoke("workspace.rename", { type: rename.kind, id: rename.id, name: renameValue });
+                }
                 if (rename.kind === "request") {
                   const name = renameValue.trim();
                   setTabs((prev) => prev.map((t) => (t.id === rename.id ? { ...t, request: { ...t.request, name } } : t)));
@@ -581,10 +674,10 @@ export function Studio(props: {
           }}
         />
       )}
-      {share && workspaceId && (
+      {share && (
         <ShareModal
           signedIn={signedIn}
-          target={{ kind: share.kind, id: share.id, name: share.name, workspaceId }}
+          target={share}
           onClose={() => setShare(null)}
         />
       )}

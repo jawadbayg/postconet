@@ -588,3 +588,75 @@ export function tree(workspaceId: string) {
     globals: repo.getGlobals(workspaceId)
   };
 }
+
+export type WorkspaceListItem = {
+  id: string;
+  name: string;
+  kind: string;
+  ownerUserId: string | null;
+  mine: boolean;
+  ownerName: string;
+  label: string;
+};
+
+function workspaceSwitcherLabel(name: string, mine: boolean, ownerName: string) {
+  const title = name.trim() || "Personal";
+  if (mine) return title;
+  const owner = ownerName.trim() || "teammate";
+  if (title !== "Personal") return `Shared · ${owner} · ${title}`;
+  return `Shared · ${owner}`;
+}
+
+export async function listWorkspacesForUi(): Promise<WorkspaceListItem[]> {
+  const repo = mustRepo();
+  const me = runtime.user?.id ?? "local";
+  const list = repo.listWorkspaces();
+  const ownerIds = [
+    ...new Set(list.map((w) => w.ownerUserId).filter((id): id is string => Boolean(id) && id !== me))
+  ];
+  const names = new Map<string, string>();
+  if (runtime.supabase && ownerIds.length) {
+    const { data } = await runtime.supabase.from("profiles").select("id, display_name").in("id", ownerIds);
+    for (const row of data ?? []) {
+      const profile = row as { id: string; display_name?: string | null };
+      const label = String(profile.display_name ?? "").trim();
+      if (label) names.set(profile.id, label);
+    }
+  }
+  const myName =
+    String((runtime.user?.user_metadata?.display_name as string | undefined) ?? "").trim() ||
+    runtime.user?.email?.split("@")[0] ||
+    "You";
+  return list
+    .map((workspace) => {
+      const mine = !workspace.ownerUserId || workspace.ownerUserId === me || me === "local";
+      const ownerName = mine ? myName : names.get(workspace.ownerUserId ?? "") || "teammate";
+      return {
+        id: workspace.id,
+        name: workspace.name,
+        kind: workspace.kind,
+        ownerUserId: workspace.ownerUserId,
+        mine,
+        ownerName,
+        label: workspaceSwitcherLabel(workspace.name, mine, ownerName)
+      };
+    })
+    .sort((a, b) => Number(b.mine) - Number(a.mine) || a.label.localeCompare(b.label));
+}
+
+export async function renameWorkspace(id: string, name: string) {
+  const repo = mustRepo();
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Name is required");
+  const workspace = repo.getWorkspace(id);
+  if (!workspace) throw new Error("Workspace not found");
+  const me = runtime.user?.id ?? "local";
+  const mine = !workspace.ownerUserId || workspace.ownerUserId === me || me === "local";
+  if (!mine) throw new Error("Only the owner can rename this workspace.");
+  workspace.name = trimmed;
+  workspace.updatedAt = nowIso();
+  workspace.version += 1;
+  repo.upsertWorkspace(workspace);
+  runtime.onLocalMutation?.();
+  return workspace;
+}

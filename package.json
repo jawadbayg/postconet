@@ -18,6 +18,7 @@
     "cli": "pnpm --filter @postconet/cli start",
     "worker": "pnpm --filter @postconet/worker start",
     "pack:mac": "pnpm --filter @postconet/desktop pack:mac",
+    "pack:win": "pnpm --filter @postconet/desktop pack:win",
     "postinstall": "pnpm --filter @postconet/desktop rebuild:native"
   }
 }

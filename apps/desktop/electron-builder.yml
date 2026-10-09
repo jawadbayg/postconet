@@ -26,6 +26,21 @@ mac:
   entitlements: entitlements.mac.plist
   entitlementsInherit: entitlements.mac.plist
   notarize: false
+win:
+  icon: icon.png
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: PostConet API Studio
+  uninstallDisplayName: PostConet API Studio
+  deleteAppDataOnUninstall: false
 publish:
   provider: generic
   url: https://updates.postconet.app

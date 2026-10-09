@@ -732,11 +732,15 @@ function subscribeRealtime() {
     .on("postgres_changes", { event: "*", schema: "public", table: "memberships" }, () => {
       void hydrateFromCloud();
     })
+    .on("postgres_changes", { event: "*", schema: "public", table: "workspace_members" }, () => {
+      void hydrateFromCloud();
+    })
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${runtime.user.id}` },
       (payload) => {
         emit("notify", payload.new);
+        void hydrateFromCloud();
       }
     )
     .on("postgres_changes", { event: "*", schema: "public", table: "resource_shares" }, () => {

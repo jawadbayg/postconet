@@ -60,7 +60,7 @@ export function AppSearch(props: {
         }}
         onFocus={() => setOpen(true)}
         placeholder="Search"
-        className="w-56 rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs"
+        className="w-80 rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1 text-xs"
         onKeyDown={(e) => {
           if (!show) return;
           if (e.key === "ArrowDown") {

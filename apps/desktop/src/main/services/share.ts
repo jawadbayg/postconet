@@ -53,19 +53,22 @@ async function invokeShare(name: string, body: unknown) {
 
 export async function inviteShare(input: {
   workspaceId: string;
-  resourceKind: "collection" | "folder" | "request";
-  resourceId: string;
+  resourceKind: "workspace" | "collection" | "folder" | "request";
+  resourceId?: string;
   email: string;
   role: "viewer" | "editor";
 }) {
   await flushSync();
-  return invokeShare("share-invite", input);
+  return invokeShare("share-invite", {
+    ...input,
+    resourceId: input.resourceId ?? input.workspaceId
+  });
 }
 
 export async function listShares(input: {
   workspaceId: string;
-  resourceKind: "collection" | "folder" | "request";
-  resourceId: string;
+  resourceKind: "workspace" | "collection" | "folder" | "request";
+  resourceId?: string;
 }) {
   if (!runtime.supabase || !runtime.user) return { shares: [], invitations: [] };
   try {

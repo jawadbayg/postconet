@@ -27,6 +27,8 @@ import {
   createRequest,
   createEnvironment,
   renameEntity,
+  renameWorkspace,
+  listWorkspacesForUi,
   deleteEntity,
   moveFolder,
   moveRequest,
@@ -120,7 +122,13 @@ export function registerIpc() {
     })
   );
 
-  bindIpc("workspace.list", () => handle(() => mustRepo().listWorkspaces()));
+  bindIpc("workspace.list", () => handle(() => listWorkspacesForUi()));
+  bindIpc("workspace.renameWorkspace", (_e, raw) =>
+    handle(() => {
+      const p = z.object({ id: z.string(), name: z.string().min(1) }).parse(raw);
+      return renameWorkspace(p.id, p.name);
+    })
+  );
   bindIpc("workspace.tree", (_e, raw) =>
     handle(() => {
       const { workspaceId } = z.object({ workspaceId: z.string() }).parse(raw);
@@ -216,8 +224,8 @@ export function registerIpc() {
         z
           .object({
             workspaceId: z.string(),
-            resourceKind: z.enum(["collection", "folder", "request"]),
-            resourceId: z.string(),
+            resourceKind: z.enum(["workspace", "collection", "folder", "request"]),
+            resourceId: z.string().optional(),
             email: z.string().email(),
             role: z.enum(["viewer", "editor"])
           })
@@ -231,8 +239,8 @@ export function registerIpc() {
         z
           .object({
             workspaceId: z.string(),
-            resourceKind: z.enum(["collection", "folder", "request"]),
-            resourceId: z.string()
+            resourceKind: z.enum(["workspace", "collection", "folder", "request"]),
+            resourceId: z.string().optional()
           })
           .parse(raw)
       )

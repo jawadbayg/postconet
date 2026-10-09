@@ -2,7 +2,20 @@ import { useEffect, useState } from "react";
 import { invoke } from "../lib/ipc";
 import { DispatchLoaderOverlay } from "./DispatchLoader";
 
-type ShareTarget = { kind: "collection" | "folder" | "request"; id: string; name: string; workspaceId: string };
+export type ShareTarget = {
+  kind: "workspace" | "collection" | "folder" | "request";
+  id: string;
+  name: string;
+  workspaceId: string;
+};
+
+type ShareRow = {
+  id: string;
+  grantee_user_id: string;
+  role: string;
+  email?: string;
+  display_name?: string;
+};
 
 export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onClose: () => void }) {
   const [email, setEmail] = useState("");
@@ -11,9 +24,11 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [list, setList] = useState<{
-    shares: Array<{ id: string; grantee_user_id: string; role: string; created_at: string }>;
+    shares: ShareRow[];
     invitations: Array<{ id: string; email: string; role: string; expires_at: string; revoked_at: string | null; accepted_at: string | null }>;
   }>({ shares: [], invitations: [] });
+  const wholeWorkspace = props.target.kind === "workspace";
+  const kindLabel = props.target.kind === "request" ? "API" : props.target.kind;
 
   async function refresh() {
     if (!props.signedIn) return;
@@ -27,7 +42,7 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
 
   useEffect(() => {
     void refresh().catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [props.target.id]);
+  }, [props.target.id, props.target.kind]);
 
   async function invite() {
     setBusy(true);
@@ -42,8 +57,13 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
         role
       });
       setEmail("");
-      if (res.mode === "direct") setMessage("Access granted. They’ll see an in-app notification.");
-      else setMessage("Access updated.");
+      if (res.mode === "direct") {
+        setMessage(
+          wholeWorkspace
+            ? "They now have this whole workspace. They’ll get an in-app notification with where to open it."
+            : "Access granted. They’ll get an in-app notification with where to find it."
+        );
+      } else setMessage("Access updated.");
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -52,13 +72,19 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
     }
   }
 
+  function personLabel(row: ShareRow) {
+    return row.email || row.display_name || `User ${row.grantee_user_id.slice(0, 8)}`;
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
       <div className="relative w-full max-w-md overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-lg">
         {busy && <DispatchLoaderOverlay size={120} />}
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-xs uppercase tracking-wide text-[var(--muted)]">Share {props.target.kind}</div>
+            <div className="text-xs uppercase tracking-wide text-[var(--muted)]">
+              {wholeWorkspace ? "Invite to workspace" : `Share ${kindLabel}`}
+            </div>
             <div className="text-sm font-medium">{props.target.name}</div>
           </div>
           <button className="text-sm text-[var(--muted)]" onClick={props.onClose}>
@@ -69,7 +95,11 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
           <p className="mt-4 text-sm text-[var(--muted)]">Sign in to share with another email address.</p>
         ) : (
           <>
-            <p className="mt-3 text-xs text-[var(--muted)]">Enter an email that already has a PostConet account. If they exist, they get an in-app notification — no email is sent. Viewer can inspect. Editor can change this item. Private credentials are not shared.</p>
+            <p className="mt-3 text-xs text-[var(--muted)]">
+              {wholeWorkspace
+                ? "This shares every collection, folder, API, and environment in this workspace. The other person must already have a PostConet account. They’ll see it in the top-bar menu as “Shared · your name”. Viewer can inspect. Editor can change things. Private credentials stay with you unless they are an editor."
+                : "Enter an email that already has a PostConet account. If they exist, they get an in-app notification — no email is sent. They open the top-bar workspace menu, choose “Shared · your name”, then find this item in the sidebar. Viewer can inspect. Editor can change this item. Private credentials are not shared."}
+            </p>
             <div className="mt-3 flex gap-2">
               <input
                 type="email"
@@ -91,12 +121,33 @@ export function ShareModal(props: { target: ShareTarget; signedIn: boolean; onCl
             <div className="mt-4 max-h-56 space-y-2 overflow-auto text-xs">
               {list.shares.map((s) => (
                 <div key={s.id} className="flex items-center justify-between rounded border border-[var(--border)] px-2 py-1.5">
-                  <span className="truncate">User {s.grantee_user_id.slice(0, 8)} · {s.role}</span>
+                  <span className="truncate">{personLabel(s)} · {s.role}</span>
                   <span className="flex gap-2">
-                    <button className="text-[var(--accent)]" onClick={() => void invoke("share.manage", { action: "update_role", workspaceId: props.target.workspaceId, shareId: s.id, role: s.role === "viewer" ? "editor" : "viewer" }).then(refresh)}>
+                    <button
+                      className="text-[var(--accent)]"
+                      onClick={() =>
+                        void invoke("share.manage", {
+                          action: "update_role",
+                          workspaceId: props.target.workspaceId,
+                          resourceKind: props.target.kind,
+                          shareId: s.id,
+                          role: s.role === "viewer" ? "editor" : "viewer"
+                        }).then(refresh)
+                      }
+                    >
                       Make {s.role === "viewer" ? "editor" : "viewer"}
                     </button>
-                    <button className="text-red-600" onClick={() => void invoke("share.manage", { action: "revoke_share", workspaceId: props.target.workspaceId, shareId: s.id }).then(refresh)}>
+                    <button
+                      className="text-red-600"
+                      onClick={() =>
+                        void invoke("share.manage", {
+                          action: "revoke_share",
+                          workspaceId: props.target.workspaceId,
+                          resourceKind: props.target.kind,
+                          shareId: s.id
+                        }).then(refresh)
+                      }
+                    >
                       Revoke
                     </button>
                   </span>

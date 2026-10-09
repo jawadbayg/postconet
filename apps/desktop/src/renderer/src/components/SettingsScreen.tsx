@@ -3,6 +3,7 @@ import { invoke } from "../lib/ipc";
 import type { SessionInfo } from "../App";
 import { AuthScreen } from "../screens/AuthScreen";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ThemeToggle } from "./ThemeToggle";
 import { isCloudUser } from "../App";
 
 type Settings = {
@@ -19,6 +20,9 @@ export function SettingsScreen(props: {
   onTheme: (t: "light" | "dark") => void;
   onSession: (s: SessionInfo) => void;
   workspaceId: string | null;
+  workspaceName?: string | null;
+  canRenameWorkspace?: boolean;
+  onWorkspaceRenamed?: () => void;
   onSignOut: () => void;
 }) {
   const [settings, setSettings] = useState<Settings>({ timeoutMs: 30000, followRedirects: true, tlsVerify: true, historyEnabled: true, theme: "light" });
@@ -26,6 +30,13 @@ export function SettingsScreen(props: {
   const signedIn = isCloudUser(props.session.user);
   const [authMode, setAuthMode] = useState<"signin" | "signup" | null>(null);
   const [confirmLogout, setConfirmLogout] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState(props.workspaceName ?? "");
+  const [workspaceSaved, setWorkspaceSaved] = useState(false);
+
+  useEffect(() => {
+    setWorkspaceName(props.workspaceName ?? "");
+    setWorkspaceSaved(false);
+  }, [props.workspaceName, props.workspaceId]);
 
   useEffect(() => {
     void invoke<Settings>("settings.get").then(setSettings).catch(() => undefined);
@@ -85,17 +96,49 @@ export function SettingsScreen(props: {
         </section>
 
         <section className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4">
+          <h2 className="text-sm font-medium">Workspace</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            This is the name in the top-bar switcher. Other people see it as “Shared · your name” plus this title if you rename it.
+          </p>
+          {props.canRenameWorkspace && props.workspaceId ? (
+            <form
+              className="mt-3 flex gap-2"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                await invoke("workspace.renameWorkspace", { id: props.workspaceId, name: workspaceName });
+                setWorkspaceSaved(true);
+                props.onWorkspaceRenamed?.();
+              }}
+            >
+              <input
+                className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--canvas)] px-2 py-1.5 text-sm"
+                value={workspaceName}
+                onChange={(e) => {
+                  setWorkspaceName(e.target.value);
+                  setWorkspaceSaved(false);
+                }}
+                placeholder="Personal"
+              />
+              <button className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white">Save</button>
+            </form>
+          ) : (
+            <div className="mt-3 text-sm">{props.workspaceName || "Shared workspace"}</div>
+          )}
+          {workspaceSaved && <div className="mt-2 text-xs text-emerald-600">Workspace name saved.</div>}
+        </section>
+
+        <section className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4">
           <h2 className="text-sm font-medium">Appearance</h2>
-          <button
-            className="mt-3 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs"
-            onClick={() => {
-              const next = props.theme === "dark" ? "light" : "dark";
-              props.onTheme(next);
-              void save({ ...settings, theme: next });
-            }}
-          >
-            Use {props.theme === "dark" ? "light" : "dark"} theme
-          </button>
+          <div className="mt-3 flex items-center gap-2">
+            <ThemeToggle
+              theme={props.theme}
+              onTheme={(next) => {
+                props.onTheme(next);
+                void save({ ...settings, theme: next });
+              }}
+            />
+            <span className="text-xs text-[var(--muted)]">{props.theme === "dark" ? "Night" : "Day"}</span>
+          </div>
         </section>
 
         <section className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 space-y-3">
